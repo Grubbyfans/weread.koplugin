@@ -9,8 +9,6 @@ local logger = require("weread.lib.logger")
 local Updater = {}
 Updater.__index = Updater
 
-Updater.AUTO_CHECK_INTERVAL = 60 * 60
-Updater.REMINDER_INTERVAL = 24 * 60 * 60
 Updater.MAX_NOTES_BYTES = 64 * 1024
 Updater.MAX_PACKAGE_BYTES = 10 * 1024 * 1024
 Updater.API_URL = "https://api.github.com/repos/finlater/weread.koplugin/releases/latest"
@@ -230,25 +228,6 @@ function Updater:available_version()
     return self:has_update() and self:_state().available_version or nil
 end
 
-function Updater:should_notify(version)
-    if Updater.compare_versions(version, self.current_version) ~= 1 then return false end
-    local state = self:_state()
-    if state.skipped_version == version then return false end
-    return state.snoozed_version ~= version
-        or os.time() >= (tonumber(state.snooze_until) or 0)
-end
-
-function Updater:snooze_update(version)
-    self:_save_state{
-        snoozed_version = version,
-        snooze_until = os.time() + Updater.REMINDER_INTERVAL,
-    }
-end
-
-function Updater:skip_update(version)
-    self:_save_state{ skipped_version = version }
-end
-
 function Updater:_http_get(url, destination, on_download, total_hint, max_bytes)
     local http = require("socket/http")
     local ltn12 = require("ltn12")
@@ -333,7 +312,6 @@ end
 
 function Updater:cache_release(release)
     self:_save_state{
-        last_check = os.time(),
         available_version = release.version,
         archive_url = release.archive_url,
         checksum_url = release.checksum_url,

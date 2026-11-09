@@ -416,7 +416,7 @@ function M:getSettingsMenuItems()
                         sub_item_table_func = function()
                             return {
                                 {
-                                    text = _("Automatically prefetch next chapter"),
+                                    text = _("Automatically prefetch next two chapters"),
                                     keep_menu_open = true,
                                     check_callback_updates_menu = true,
                                     checked_func = function()
@@ -424,7 +424,7 @@ function M:getSettingsMenuItems()
                                             == true
                                     end,
                                     callback = self:safeCallback(
-                                        _("Automatically prefetch next chapter"),
+                                        _("Automatically prefetch next two chapters"),
                                         function(touchmenu_instance)
                                             local cache = self.settings:get("cache")
                                             local function apply(enabled)
@@ -911,27 +911,10 @@ function M:getUpdateMenuItems()
             text = _("Check for updates"),
             keep_menu_open = true,
             callback = self:safeCallback(_("Check for updates"), function()
-                self.updater:check(true)
+                self.updater:check()
             end),
         })
     end
-    table.insert(items, {
-        text = _("Automatically check once an hour"),
-        keep_menu_open = true,
-        check_callback_updates_menu = true,
-        checked_func = function()
-            return self.settings:get("update").auto_check == true
-        end,
-        callback = self:safeCallback(_("Automatically check once an hour"),
-            function(touchmenu_instance)
-                local update = self.settings:get("update")
-                update.auto_check = not (update.auto_check == true)
-                self.settings:set("update", update)
-                self.settings:flush()
-                if update.auto_check then self.updater:schedule_auto_check() end
-                if touchmenu_instance then touchmenu_instance:updateItems() end
-            end),
-    })
     table.insert(items, {
         text = _("Prefer proxy for updates"),
         keep_menu_open = true,

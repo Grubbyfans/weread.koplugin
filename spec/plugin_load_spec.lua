@@ -97,7 +97,6 @@ end
 package.preload["weread.ui.updater"] = function()
     return {
         new = function(_self, options)
-            options.schedule_auto_check = function() end
             return options
         end,
     }

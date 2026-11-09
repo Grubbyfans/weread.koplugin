@@ -1,9 +1,10 @@
--- Focused tests for next-chapter selection and one-second prefetch notices.
+-- Focused tests for the two-chapter prefetch window and notices.
 
 package.path = "./?.lua;" .. package.path
 
 local existing = {}
 local logs = {}
+local scheduled
 package.preload["weread.lib.content"] = function()
     return {
         catalog_cache_path = function() return "/cache/catalog.json" end,
@@ -24,7 +25,7 @@ package.preload["weread.lib.protocol"] = function()
     return { is_mp_book = function(book_id) return book_id == "mp-book" end }
 end
 package.preload["ui/uimanager"] = function()
-    return { scheduleIn = function() end }
+    return { scheduleIn = function(_self, _delay, callback) scheduled = callback end }
 end
 package.preload["weread.lib.plugin_util"] = function()
     return {
@@ -56,6 +57,7 @@ local chapters = {
     { chapterUid = 1, title = "One" },
     { chapterUid = 2, title = "Two" },
     { chapterUid = 3, title = "Three" },
+    { chapterUid = 4, title = "Four" },
 }
 local book = {
     book_id = "book",
@@ -120,13 +122,21 @@ expect(#notices == 2 and notices[1][2] == 0.5 and notices[2][2] == 1,
 expect(#logs == 2 and logs[1][1] == "info" and logs[2][1] == "info",
     "prefetch start and success are logged")
 
-starts = {}
-notices = {}
 book.cached_chapters["2"] = "/cache/two.epub"
 existing["/cache/two.epub"] = true
-expect(host:maybePrefetchNextChapter("book"), "cached next chapter is satisfied")
-expect(#starts == 0, "cached next chapter does not scan forward to chapter three")
+expect(type(scheduled) == "function", "successful prefetch schedules the next check")
+scheduled()
+expect(#starts == 2 and starts[2].chapters[1] == chapters[3],
+    "prefetch skips the cached next chapter and fills the second slot")
 
+book.cached_chapters["3"] = "/cache/three.epub"
+existing["/cache/three.epub"] = true
+starts[2].options.on_complete(true, "/cache/three.epub")
+scheduled()
+expect(#starts == 2, "prefetch stops once both slots are cached")
+
+starts = {}
+notices = {}
 book.cached_chapters["2"] = nil
 existing["/cache/two.epub"] = nil
 host:maybePrefetchNextChapter("book")
@@ -144,6 +154,25 @@ expect(starts[1].options.start_delay == 0.1,
 starts[1].options.on_start()
 starts[1].options.on_complete(false, "network error")
 expect(#notices == 1, "notification setting silences all prefetch notices")
+
+-- A queued follow-up must not restart prefetch after a document switch.
+starts = {}
+host:maybePrefetchNextChapter("book")
+starts[1].options.on_complete(true, "/cache/two.epub")
+host._reader_session_gen = 1
+scheduled()
+expect(#starts == 1, "stale follow-up does not start another download")
+
+local opened, showed_dialog
+host.detectWeReadBook = function() return "book" end
+host.openChapter = function(_self, _book, chapter) opened = chapter end
+host.showEndOfBookDialog = function() showed_dialog = true return true end
+expect(host:handleEndOfBook() and opened == chapters[2] and not showed_dialog,
+    "continuous reading opens the next chapter at the document end")
+cache.auto_prefetch_next_chapter = false
+expect(host:handleEndOfBook() and showed_dialog,
+    "disabling prefetch preserves the usual end-of-chapter dialog")
+host.detectWeReadBook = function() return nil end
 
 local legacy_single = {
     cached_file = "/cache/one.epub",

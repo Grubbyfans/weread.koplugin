@@ -83,7 +83,9 @@ function M:handleEndOfBook(status_self)
     local current_idx, current_ch, is_full_book = self:getChapterInfoFromFile(book, file)
     local next_ch = (not is_full_book) and current_idx and book.chapters[current_idx + 1]
 
-    if action == "next_file" then
+    local continuous = not is_full_book and current_idx
+        and self.settings:get("cache").auto_prefetch_next_chapter == true
+    if continuous or action == "next_file" then
         if next_ch then
             self:openChapter(book, next_ch)
         else
@@ -224,26 +226,28 @@ function M:maybePrefetchNextChapter(book_id)
     end
     local chapter_info = { self:getChapterInfoFromFile(book, file) }
     local current_index, is_full_book = chapter_info[1], chapter_info[3]
-    local next_chapter = not is_full_book and current_index
-        and chapters[current_index + 1] or nil
-    if not next_chapter then
+    if is_full_book or not current_index or not chapters[current_index + 1] then
         self.downloader:cancelPrefetch("no_next_chapter")
         return false
     end
 
-    local next_uid = tostring(next_chapter.chapterUid or next_chapter.chapterId or "")
-    local cached = book.cached_chapters and book.cached_chapters[next_uid]
-    if file_exists(cached) then
-        if self.prefetchChapterAnnotations then self:prefetchChapterAnnotations(book, next_chapter) end
-        if not self.downloader:isPrefetching(book, next_chapter) then
-            self.downloader:cancelPrefetch("next_chapter_cached")
+    local next_chapter, next_uid
+    for index = current_index + 1, math.min(current_index + 2, #chapters) do
+        local chapter = chapters[index]
+        local uid = tostring(chapter.chapterUid or chapter.chapterId or "")
+        local cached = book.cached_chapters and book.cached_chapters[uid]
+        if not file_exists(cached) then
+            next_chapter, next_uid = chapter, uid
+            break
         end
-        return true
+        if index == current_index + 1 and self.prefetchChapterAnnotations then
+            self:prefetchChapterAnnotations(book, chapter)
+        end
     end
-    if self.downloader:isPrefetching(book, next_chapter) then
-        return true
-    end
+    if not next_chapter then return true end
+    if self.downloader:isPrefetching(book, next_chapter) then return true end
 
+    local session = self._reader_session_gen
     local title = next_chapter.title or T(_("Chapter %1"), next_uid)
     return self.downloader:start(book, { next_chapter }, "chapter", {
         single_chapter = true,
@@ -258,24 +262,25 @@ function M:maybePrefetchNextChapter(book_id)
                 "chapter_uid=", next_uid,
                 "title=", title)
             self:showPrefetchNotice(
-                T(_("Prefetching next chapter: %1"), title), 0.5)
+                T(_("Prefetching chapter: %1"), title), 0.5)
         end,
         on_complete = function(ok, value)
             if ok then
-                -- A promoted prefetch opens the new file immediately. Its
-                -- ReaderReady path can download source data for that file
-                -- when both prefetch switches are enabled, so
-                -- do not fork an annotation worker only to cancel it during
-                -- the document switch.
-                if self.prefetchChapterAnnotations
-                    and not self.downloader:isPromotedPrefetch(book, next_chapter) then
-                    self:prefetchChapterAnnotations(book, next_chapter)
-                end
                 logger.info("succeeded:",
                     "book_id=", tostring(book_id),
                     "chapter_uid=", next_uid,
                     "title=", title)
-                self:showPrefetchNotice(T(_("Next chapter prefetched: %1"), title))
+                self:showPrefetchNotice(T(_("Chapter prefetched: %1"), title))
+                if not self.downloader:isPromotedPrefetch(book, next_chapter) then
+                    -- The result is persisted before this callback. Wait for
+                    -- the downloader to release the completed job.
+                    UIManager:scheduleIn(0.1, function()
+                        if self._reader_session_gen == session
+                            and self.ui.document and self.ui.document.file == file then
+                            self:maybePrefetchNextChapter(book_id)
+                        end
+                    end)
+                end
                 return
             end
             local retry_requested = self.downloader:isPromotedPrefetch(
@@ -302,7 +307,7 @@ function M:maybePrefetchNextChapter(book_id)
                 "chapter_uid=", next_uid,
                 "title=", title,
                 "reason=", log_error(value))
-            self:showPrefetchNotice(T(_("Next chapter prefetch failed: %1"), reason))
+            self:showPrefetchNotice(T(_("Chapter prefetch failed: %1"), reason))
             if retry_requested then
                 local source_file = file
                 local retry_cache = self.settings:get("cache")
@@ -462,7 +467,7 @@ function M:getChapterInfoFromFile(book, file_path)
 
     if mapped_count == 1 and current_uid then
         for i, ch in ipairs(book.chapters) do
-            if tostring(ch.chapterUid) == tostring(current_uid) then
+            if tostring(ch.chapterUid or ch.chapterId) == tostring(current_uid) then
                 return i, ch, is_full_book
             end
         end

@@ -94,90 +94,47 @@ ui:_show_release{
 expect(shown_widget.title == "New version available\nWeRead v0.6.0 → v0.7.0",
     "release notes viewer title was wrong")
 expect(shown_widget.text == "First change\nSecond change"
-    and shown_widget.buttons_table[1][2].text == "Skip this version"
-    and shown_widget.buttons_table[2][1].text == "Update now",
+    and shown_widget.buttons_table[1][1].text == "Close"
+    and shown_widget.buttons_table[1][2].text == "Update now",
     "release notes viewer did not expose notes and install action")
 expect(shown_widget.add_default_buttons == false and shown_widget.show_menu == false,
     "release viewer must not add navigation buttons")
 shown_widget.buttons_table[1][1].callback()
-expect(shown_widget == nil and not core:should_notify("0.7.0"), "later button did not snooze")
+expect(shown_widget == nil, "close button dismisses release notes")
 
 local fetched = { version = "0.7.0", notes = "Release notes" }
 core.fetch_release = function() return fetched end
 ui._run_subprocess = function(_self, message, task, callback)
+    expect(message == "Checking for updates…", "manual check shows progress")
     callback(task())
 end
-ui:check(false)
-expect(shown_widget == nil, "snoozed automatic check displayed a dialog")
-state.snooze_until = 0
-ui:check(false)
-expect(shown_widget and shown_widget.text == fetched.notes, "new release did not auto-notify")
-local automatic_viewer = shown_widget
+ui:check()
+expect(shown_widget and shown_widget.text == fetched.notes, "manual check shows the new release")
+local viewer = shown_widget
 local another_ui = UpdaterUI:new{ updater = core, settings = settings }
-expect(another_ui:_show_release(fetched) == nil and shown_widget == automatic_viewer,
+expect(another_ui:_show_release(fetched) == nil and shown_widget == viewer,
     "two plugin instances displayed duplicate update dialogs")
-automatic_viewer.buttons_table[1][2].callback()
-expect(shown_widget == nil and state.skipped_version == "0.7.0", "skip button did not save the version")
-ui:check(false)
-expect(shown_widget == nil, "skipped automatic check displayed a dialog")
+viewer.buttons_table[1][1].callback()
 ui:show_cached_update()
-expect(shown_widget ~= nil, "manual cached update must ignore suppression")
+expect(shown_widget ~= nil, "manual cached update can reopen a dismissed release")
 shown_widget.close_callback()
-shown_widget = nil
-fetched = { version = "0.8.0", notes = "Newer notes" }
-ui:check(false)
-expect(shown_widget and shown_widget.text == "Newer notes", "newer version should notify again")
-shown_widget.close_callback()
-shown_widget = nil
-expect(state.snoozed_version == "0.8.0", "back/close must behave like remind later")
-ui:check(true)
-expect(shown_widget ~= nil, "manual check must ignore snoozing")
-shown_widget.close_callback()
-shown_widget = nil
-fetched = { version = "0.6.0" }
-ui:check(false)
-expect(shown_widget == nil, "current version should remain silent automatically")
-fetched = nil
-ui:check(false)
-expect(shown_widget == nil, "automatic failure should remain silent")
-ui:check(true)
-expect(shown_widget and shown_widget.text:find("Update check failed", 1, true),
-    "manual failure should still be reported")
 shown_widget = nil
 
-local now = 100000
-local original_env = getfenv(UpdaterUI.schedule_auto_check)
-setfenv(UpdaterUI.schedule_auto_check, setmetatable({
-    os = { time = function() return now end },
-}, { __index = original_env }))
-state = { auto_check = true, last_check = now - 3599 }
-local automatic_checks = 0
-ui.check = function(_self, manual)
-    expect(manual == false, "automatic update checks must use the automatic policy")
-    automatic_checks = automatic_checks + 1
-end
-ui:schedule_auto_check()
-expect(#scheduled == 0, "automatic check repeated before one hour elapsed")
-state.last_check = now - 3600
-ui:schedule_auto_check()
-expect(#scheduled == 1 and scheduled[1].delay == 5,
-    "automatic check must become due after one hour and preserve startup delay")
-scheduled[1].callback()
-expect(automatic_checks == 1, "due automatic check did not run")
-ui.is_connected = function() return false end
-scheduled[1].callback()
-expect(automatic_checks == 1, "automatic check must not connect while offline")
-scheduled = {}
-state.auto_check = false
-ui:schedule_auto_check()
-expect(#scheduled == 0, "disabled automatic checks must remain disabled")
-setfenv(UpdaterUI.schedule_auto_check, original_env)
+fetched = { version = "0.6.0" }
+ui:check()
+expect(shown_widget and shown_widget.text:find("up to date", 1, true),
+    "manual check reports the current version")
+fetched = nil
+ui:check()
+expect(shown_widget and shown_widget.text:find("Update check failed", 1, true),
+    "manual failure is reported")
+shown_widget = nil
 
 local installed
 ui.install = function(_self, value) installed = value end
 local install_release = { version = "0.9.0", notes = "Install now" }
 ui:_show_release(install_release)
-local install_button = shown_widget.buttons_table[2][1]
+local install_button = shown_widget.buttons_table[1][2]
 install_button.callback()
 expect(shown_widget == nil, "install button must close the release viewer")
 expect(another_ui:_show_release(install_release) == nil, "install must suppress concurrent dialogs")

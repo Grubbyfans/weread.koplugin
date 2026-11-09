@@ -253,8 +253,8 @@ local last_settings_item = settings_items[#settings_items]
 expect(last_settings_item and last_settings_item.text == "About",
     "about is the last settings menu item")
 local about_items = last_settings_item and last_settings_item.sub_item_table_func()
-expect(about_items and #about_items == 6,
-    "about contains version, author, WeReader, and three update settings")
+expect(about_items and #about_items == 5,
+    "about contains version, author, WeReader, and two update settings")
 for index, item in ipairs(about_items or {}) do
     expect(item.keep_menu_open == true,
         "about item " .. index .. " keeps the menu open")
@@ -266,12 +266,11 @@ expect(about_items[2] and about_items[2].text == "Author: %1",
 expect(about_items[3] and about_items[3].text == "Discover WeReader closed-source edition",
     "WeReader entry follows the author")
 expect(about_items[4] and about_items[4].text == "Check for updates"
-        and about_items[5].text == "Automatically check once an hour"
-        and about_items[6].text == "Prefer proxy for updates",
+        and about_items[5].text == "Prefer proxy for updates",
     "update settings follow the WeReader entry at the same level")
 available_version = "0.7.0"
 local update_available_items = last_settings_item.sub_item_table_func()
-expect(#update_available_items == 6
+expect(#update_available_items == 5
         and update_available_items[4].text == "Update to v%1",
     "available update replaces the check item without adding another item")
 available_version = nil
@@ -372,7 +371,7 @@ expect(footnote_popup == nil, "footnote display is controlled by the reader")
 local prefetch_items = prefetch and prefetch.sub_item_table_func() or {}
 expect(#prefetch_items == 3, "chapter prefetch contains its two related preferences")
 expect(prefetch_items[1] and prefetch_items[1].text
-        == "Automatically prefetch next chapter",
+        == "Automatically prefetch next two chapters",
     "automatic prefetch is the parent switch")
 expect(prefetch_items[2] and not prefetch_items[2].enabled_func(),
     "annotation prefetch is disabled while automatic prefetch is off")

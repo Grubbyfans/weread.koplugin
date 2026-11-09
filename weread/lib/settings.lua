@@ -34,7 +34,7 @@ local defaults = {
         download_mp_images = false,
         download_underlines_and_thoughts = false,
         prefetch_annotations = false,
-        auto_prefetch_next_chapter = false,
+        auto_prefetch_next_chapter = true,
         show_prefetch_notifications = true,
         show_annotations = true,
         -- When true, taps in the left/right edge zones never open thought popups
@@ -78,12 +78,7 @@ local defaults = {
         developer_logs = false,
     },
     update = {
-        auto_check = false,
         prefer_proxy = true,
-        last_check = 0,
-        skipped_version = "",
-        snoozed_version = "",
-        snooze_until = 0,
         available_version = "",
         archive_url = "",
         checksum_url = "",
@@ -183,7 +178,7 @@ function Settings:new()
         cache_changed = true
     end
     if cache.auto_prefetch_next_chapter == nil then
-        cache.auto_prefetch_next_chapter = false
+        cache.auto_prefetch_next_chapter = true
         cache_changed = true
     end
     if cache.show_prefetch_notifications == nil then

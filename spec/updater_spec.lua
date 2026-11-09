@@ -168,25 +168,11 @@ local updater = Updater:new{
     plugin_dir = "/tmp/weread.koplugin",
 }
 updater:cache_release(release)
-expect(updater:should_notify("0.7.0"), "new release should notify by default")
-expect(not updater:should_notify("0.6.0") and not updater:should_notify("0.5.0"),
-    "current or older release should not notify")
-local before_snooze = os.time()
-updater:snooze_update("0.7.0")
-expect(update_state.snooze_until >= before_snooze + 86400
-    and not updater:should_notify("0.7.0"), "snooze must suppress the version for 24 hours")
-expect(updater:should_notify("0.8.0"), "snooze must not hide a newer version")
 local reloaded = Updater:new{
     settings = updater.settings, current_version = "0.6.0", plugin_dir = updater.plugin_dir,
 }
-expect(not reloaded:should_notify("0.7.0"), "snooze must survive instance recreation")
-update_state.snooze_until = os.time()
-expect(reloaded:should_notify("0.7.0"), "snooze should expire after 24 hours")
-updater:skip_update("0.7.0")
-updater:cache_release(release)
-expect(not reloaded:should_notify("0.7.0") and reloaded:should_notify("0.8.0"),
-    "skipped version must survive checks and leave newer releases visible")
-expect(reloaded:cached_release().version == "0.7.0", "skipping must preserve manual update")
+expect(reloaded:cached_release().version == "0.7.0",
+    "release found manually remains available after reopening")
 local backup_exists, purged_path = true, nil
 package.loaded["libs/libkoreader-lfs"] = {
     attributes = function(path)

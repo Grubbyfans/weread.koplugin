@@ -87,7 +87,6 @@ local fake_menu = {
 local downloaded_options
 local returned_to_parent = false
 local opened_chapter
-local single_chapter_refresh
 local host = {
     safeCallback = function(_self, _label, callback) return callback end,
     loadChapters = function(_self, _book, callback) callback(chapters) end,
@@ -99,9 +98,8 @@ local host = {
         downloaded_options = options
     end,
     showTransientInfo = function() end,
-    openChapter = function(_self, _book, chapter, on_downloaded)
+    openChapter = function(_self, _book, chapter)
         opened_chapter = chapter
-        single_chapter_refresh = on_downloaded
     end,
 }
 for key, value in pairs(Library) do
@@ -126,8 +124,7 @@ expect(type(catalog_view_callbacks.on_refresh) == "function"
     "chapter catalog keeps refresh and multi-download actions")
 catalog_view_callbacks.on_select(chapters[1])
 expect(opened_chapter == chapters[1], "chapter row opens the selected chapter")
-expect(type(single_chapter_refresh) == "function",
-    "chapter row passes a post-download refresh callback")
+expect(downloaded_options == nil, "chapter row does not start a batch download")
 
 host:showChapterDownloadSelection(book, chapters, function()
     returned_to_parent = true

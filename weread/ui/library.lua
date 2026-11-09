@@ -864,7 +864,6 @@ function M:showBookMenu(book)
         },
         {
             text = _("▤ Read"),
-            enabled = has_cache,
             callback = self:safeCallback(_("Read"), function()
                 self:openBookForReading(book)
             end),
@@ -1340,14 +1339,7 @@ function M:showChapterList(book, on_close)
                 end)
             end),
             on_select = function(chapter)
-                self:openChapter(book, chapter, function()
-                    -- The downloader has persisted the new chapter path before
-                    -- this callback runs. Rebuild beneath the completion dialog
-                    -- so either "Read now" or "Close" leaves current cache state.
-                    UIManager:scheduleIn(0.1, function()
-                        showCatalog(chapters, view)
-                    end)
-                end)
+                self:openChapter(book, chapter)
             end,
             on_close = function()
                 if self._chapter_list_view == view then
@@ -1460,79 +1452,102 @@ function M:openCachedBook(book)
     self:openFile(self:getFullBookCachePath(book))
 end
 
--- Read offline from the best available cache. A complete EPUB wins. Otherwise
--- choose the cached chapter nearest to the last known chapter/progress, with a
--- slight preference for the preceding chapter when distances are equal.
+local function reading_chapter_index(book, chapters)
+    local local_position = book.last_local_position
+    local local_uid = type(local_position) == "table"
+        and (local_position.current_chapter_uid or local_position.chapter_uid)
+    local remote_index
+    for index, chapter in ipairs(chapters) do
+        local uid = tostring(chapter.chapterUid or chapter.chapterId or index)
+        if local_uid and uid == tostring(local_uid) then return index end
+        if book.chapter_uid and uid == tostring(book.chapter_uid) then
+            remote_index = index
+        end
+    end
+    if remote_index then return remote_index end
+
+    local chapter_idx = tonumber(book.chapter_idx)
+    if chapter_idx then
+        for index, chapter in ipairs(chapters) do
+            if tonumber(chapter.chapterIdx or chapter.chapterIndex) == chapter_idx then
+                return index
+            end
+        end
+    end
+
+    local progress = math.max(0, math.min(100, tonumber(book.progress) or 0))
+    return math.floor(progress / 100 * math.max(0, #chapters - 1)) + 1
+end
+
+local function nearest_cached_chapter(book, chapters, target_index)
+    local nearest, distance
+    for index, chapter in ipairs(chapters) do
+        local uid = tostring(chapter.chapterUid or chapter.chapterId or index)
+        local path = book.cached_chapters and book.cached_chapters[uid]
+        local offset = math.abs(index - target_index)
+        if (not distance or offset < distance) and file_exists(path) then
+            nearest, distance = path, offset
+        end
+    end
+    if nearest then return nearest end
+
+    local first_uid
+    for uid, path in pairs(book.cached_chapters or {}) do
+        if (not first_uid or tostring(uid) < first_uid) and file_exists(path) then
+            first_uid, nearest = tostring(uid), path
+        end
+    end
+    return nearest
+end
+
 function M:openBookForReading(book)
     local full_path = self:getFullBookCachePath(book)
     if file_exists(full_path) then
         self:openFile(full_path)
-        return true
+        return
     end
 
-    local book_id = book.book_id or book.bookId
-    local chapters = book.chapters
-    if type(chapters) ~= "table" and self.library_db then
-        chapters = self.library_db:getChapters(book_id)
-        if chapters then book.chapters = chapters end
-    end
-    if type(chapters) ~= "table" then
-        chapters = Content.load_catalog_cache(self.client, self.settings, book)
-    end
-
-    local candidates = {}
-    local target_index
-    if type(chapters) == "table" then
-        for index, chapter in ipairs(chapters) do
-            local uid = tostring(chapter.chapterUid or chapter.chapterId or index)
-            local path = book.cached_chapters and book.cached_chapters[uid]
-            if file_exists(path) then
-                candidates[#candidates + 1] = { index = index, path = path }
-            end
-            if book.chapter_uid ~= nil
-                and uid == tostring(book.chapter_uid) then
-                target_index = index
-            elseif target_index == nil and book.chapter_idx ~= nil
-                and tonumber(chapter.chapterIdx or chapter.chapterIndex) == tonumber(book.chapter_idx) then
-                target_index = index
-            end
-        end
-        if not target_index and tonumber(book.progress) then
-            local progress = math.max(0, math.min(100, tonumber(book.progress)))
-            target_index = math.floor(progress / 100 * math.max(0, #chapters - 1)) + 1
+    local function read_offline(chapters, target_index)
+        local cached = nearest_cached_chapter(book, chapters, target_index)
+        if cached then
+            self:openFile(cached)
+        else
+            self:showOffline(_("Read"))
         end
     end
 
-    if #candidates > 0 then
-        target_index = target_index or candidates[1].index
-        table.sort(candidates, function(left, right)
-            local left_distance = math.abs(left.index - target_index)
-            local right_distance = math.abs(right.index - target_index)
-            if left_distance ~= right_distance then return left_distance < right_distance end
-            local left_precedes = left.index <= target_index
-            local right_precedes = right.index <= target_index
-            if left_precedes ~= right_precedes then return left_precedes end
-            return left.index < right.index
-        end)
-        self:openFile(candidates[1].path)
-        return true
+    local chapters = self:ensureChaptersLoaded(book)
+    if not chapters then
+        if self:isNetworkOnline() then
+            self:loadChapters(book, function(loaded)
+                local target = loaded[reading_chapter_index(book, loaded)]
+                if target then
+                    self:openChapter(book, target)
+                else
+                    self:showInfo(_("No readable chapter found"))
+                end
+            end)
+        else
+            read_offline({}, 1)
+        end
+        return
     end
 
-    local fallback_paths = {}
-    for uid, path in pairs(book.cached_chapters or {}) do
-        if file_exists(path) then fallback_paths[#fallback_paths + 1] = { uid = tostring(uid), path = path } end
+    local target_index = reading_chapter_index(book, chapters)
+    local target = chapters[target_index]
+    local uid = target and (target.chapterUid or target.chapterId)
+    local cached = uid and book.cached_chapters and book.cached_chapters[tostring(uid)]
+    if file_exists(cached) then
+        self:openFile(cached)
+    elseif target and self:isNetworkOnline() then
+        self:openChapter(book, target)
+    else
+        read_offline(chapters, target_index)
     end
-    table.sort(fallback_paths, function(left, right) return left.uid < right.uid end)
-    if fallback_paths[1] then
-        self:openFile(fallback_paths[1].path)
-        return true
-    end
-    self:showInfo(_("No cached file."))
-    return false
 end
 
 -- Open a chapter, preferring its cached file and falling back to a download.
-function M:openChapter(book, chapter, on_downloaded)
+function M:openChapter(book, chapter)
     local chapter_uid = chapter.chapterUid or chapter.chapterId
     local cached = book.cached_chapters and book.cached_chapters[tostring(chapter_uid)]
     if cached and file_exists(cached) then
@@ -1542,7 +1557,7 @@ function M:openChapter(book, chapter, on_downloaded)
         -- dialog and opens the chapter as soon as the same task completes.
         return
     else
-        self:downloadChapterAndRead(book, chapter, on_downloaded)
+        self:downloadChapterAndRead(book, chapter)
     end
 end
 
@@ -1595,12 +1610,10 @@ function M:openProgressTargetChapter(book, chapter)
     return true
 end
 
-function M:downloadChapterAndRead(book, chapter, on_downloaded)
-    self:confirmAndDownloadChapters(book, { chapter }, "chapter", {
+function M:downloadChapterAndRead(book, chapter)
+    return self.downloader:start(book, { chapter }, "chapter", {
         single_chapter = true,
-        on_complete = function(ok, path)
-            if ok and on_downloaded then on_downloaded(path) end
-        end,
+        open_on_complete = true,
     })
 end
 

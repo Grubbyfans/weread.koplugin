@@ -74,8 +74,8 @@ local function wait_for(predicate)
     end
     UIManager:forceRePaint()
 end
-local function check(manual)
-    assert(ui:check(manual))
+local function check()
+    assert(ui:check())
     wait_for(function() return not ui._checking end)
 end
 if interactive then
@@ -88,24 +88,22 @@ if interactive then
     UIManager:show(ButtonDialog:new{
         title = "更新提示测试 · 合成数据",
         buttons = {
-            { { text = "自动检查", callback = function() ui:check(false) end } },
+            { { text = "检查更新", callback = function() ui:check() end } },
             { { text = "手动查看更新", callback = function() ui:show_cached_update() end } },
             { { text = "退出测试", callback = function() UIManager:quit() end } },
         },
     })
-    UIManager:scheduleIn(1, function() ui:check(false) end)
     UIManager:run()
     os.exit(0)
 end
 
-check(false)
+check()
 local viewer = assert(top())
 assert(viewer.scroll_widget and viewer.scroll_widget.v_scroll_bar.enable, "long notes must scroll")
 assert(viewer.text:find("最后一条更新", 1, true), "notes were truncated")
-assert(#viewer.buttons_table == 2 and #viewer.buttons_table[1] == 2
-    and #viewer.buttons_table[2] == 1, "unexpected navigation buttons")
+assert(#viewer.buttons_table == 1 and #viewer.buttons_table[1] == 2, "unexpected navigation buttons")
 paint("01-update")
-for _, id in ipairs({ "later", "skip", "install" }) do
+for _, id in ipairs({ "close", "install" }) do
     local button = assert(viewer.button_table:getButtonById(id))
     local label = button.label_container[1]:getSize()
     assert(label.h <= button.label_container.dimen.h and label.w <= button.label_container.dimen.w,
@@ -118,21 +116,11 @@ viewer.scroll_widget:scrollToBottom()
 paint("02-scrolled")
 assert(viewer.scroll_widget.v_scroll_bar.low > 0, "scrollbar did not move")
 assert(viewer.button_table:getButtonById("install").dimen.y == button_y, "buttons moved with notes")
-viewer.button_table:getButtonById("later").callback()
-assert(not core:should_notify(metadata.tag_name:sub(2)), "later did not snooze")
-check(false)
-assert(not top(), "snoozed release displayed again")
-local persisted = Settings:new():get("update")
-assert(persisted.snoozed_version == metadata.tag_name:sub(2) and persisted.snooze_until > os.time(),
-    "snooze was not persisted to disk")
-viewer = ui:show_cached_update()
-assert(viewer, "manual entry did not bypass snooze")
-viewer.button_table:getButtonById("skip").callback()
-assert(Settings:new():get("update").skipped_version == metadata.tag_name:sub(2), "skip not persisted")
-check(false)
-assert(not top(), "skipped release displayed again")
-check(true)
-viewer = assert(top())
+viewer.button_table:getButtonById("close").callback()
+assert(not top(), "close left a viewer open")
+assert(Settings:new():get("update").available_version == metadata.tag_name:sub(2),
+    "manual check result was not persisted to disk")
+viewer = assert(ui:show_cached_update(), "manual entry did not reopen the cached release")
 viewer:onClose()
 assert(not top(), "native back/close left a viewer open")
 local original_tag = metadata.tag_name
@@ -141,12 +129,12 @@ metadata.assets = {
     { name = "weread.koplugin-v9999.9.2.zip", browser_download_url = Updater.RELEASE_PREFIX .. "v9999.9.2/test.zip" },
     { name = "weread.koplugin-v9999.9.2.zip.sha256", browser_download_url = Updater.RELEASE_PREFIX .. "v9999.9.2/test.sha256" },
 }
-check(false)
+check()
 assert(top() and top().title:find("9999.9.2", 1, true), "newer release did not notify")
 top():onClose()
 metadata = json.decode(read(root .. "/fixtures/release.json"))
 assert(metadata.tag_name == original_tag)
-check(true)
+check()
 viewer = assert(top())
 local checksum_path = root .. "/fixtures/" .. metadata.assets[2].name
 local checksum = read(checksum_path)
@@ -170,4 +158,4 @@ assert(read(core.plugin_dir .. ".backup/_meta.lua"):find('version = "' .. curren
 assert(not core:has_update(), "successful install left cached update active")
 UIManager:close(top())
 UIManager:quit()
-print("PASS: native scrolling + fixed buttons + automatic/manual reminders + disk persistence + checksum rejection/retry + subprocess install")
+print("PASS: native scrolling + fixed buttons + manual check + disk persistence + checksum rejection/retry + subprocess install")

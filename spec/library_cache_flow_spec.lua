@@ -62,7 +62,8 @@ local auto_refresh
 local shown_book
 local opened_path
 local single_download_options
-local single_download_refreshed = false
+local download_target
+local online = false
 local host = {
     settings = {
         get = function(_self, key, default)
@@ -90,9 +91,15 @@ local host = {
     showBookMenu = function(_self, book) shown_book = book end,
     getFullBookCachePath = function(_self, book) return book.full_path end,
     openFile = function(_self, path) opened_path = path end,
-    confirmAndDownloadChapters = function(_self, _book, _chapters, _suffix, options)
-        single_download_options = options
-    end,
+    downloader = {
+        promotePrefetch = function() return false end,
+        start = function(_self, _book, chapters, _suffix, options)
+            download_target = chapters[1]
+            single_download_options = options
+        end,
+    },
+    ensureChaptersLoaded = function(_self, book) return book.chapters end,
+    isNetworkOnline = function() return online end,
     showInfo = function() end,
     requireLogin = function() return true end,
     runOnlineTask = function(_self, _label, callback) callback() return true end,
@@ -162,13 +169,23 @@ host:openBookForReading(partial)
 expect(opened_path == partial.full_path,
     "complete cached book did not take priority over chapter caches")
 
-host:downloadChapterAndRead(partial, partial.chapters[3], function()
-    single_download_refreshed = true
-end)
-expect(single_download_options and single_download_options.single_chapter == true,
-    "single chapter download keeps single-chapter mode")
-single_download_options.on_complete(true, "/cache/3.epub")
-expect(single_download_refreshed,
-    "single chapter completion did not notify the chapter list")
+online = true
+partial.full_path = nil
+partial.chapter_uid = 4
+partial.last_local_position = { current_chapter_uid = 3 }
+host:openBookForReading(partial)
+expect(download_target == partial.chapters[3],
+    "online reading downloads the exact local resume chapter instead of the remote chapter or nearby cache")
+expect(single_download_options and single_download_options.single_chapter == true
+    and single_download_options.open_on_complete == true,
+    "single chapter reading downloads and opens without confirmation")
+
+host:openBookForReading({ book_id = "new", chapters = partial.chapters })
+expect(download_target == partial.chapters[1],
+    "first-time reading opens the first chapter without requiring a cache")
+
+host:openBookForReading({ book_id = "new" })
+expect(download_target == db_chapters[1],
+    "reading also loads the catalog when the book has no chapters in memory")
 
 print(("library_cache_flow_spec: %d checks"):format(checks))
