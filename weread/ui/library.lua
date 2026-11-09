@@ -6,6 +6,7 @@ local Content = require("weread.lib.content")
 local ShelfGroups = require("weread.lib.shelf_groups")
 local InputDialog = require("ui/widget/inputdialog")
 local logger = require("weread.lib.logger")
+local PositionMapper = require("weread.lib.position_mapper")
 local ProgressbarDialog = require("ui/widget/progressbardialog")
 local TextViewer = require("ui/widget/textviewer")
 local UIManager = require("ui/uimanager")
@@ -756,6 +757,34 @@ function M:refreshBookRecord(book, old_view, options)
     if started == false and options.automatic then self:showBookMenu(book) end
 end
 
+local function reading_chapter_index(book, chapters, progress)
+    progress = progress or book
+    local local_position = book.last_local_position
+    local local_uid = type(local_position) == "table"
+        and (local_position.current_chapter_uid or local_position.chapter_uid)
+    local remote_index
+    for index, chapter in ipairs(chapters) do
+        local uid = tostring(chapter.chapterUid or chapter.chapterId or index)
+        if local_uid and uid == tostring(local_uid) then return index end
+        if progress.chapter_uid and uid == tostring(progress.chapter_uid) then
+            remote_index = index
+        end
+    end
+    if remote_index then return remote_index end
+
+    local chapter_idx = tonumber(progress.chapter_idx)
+    if chapter_idx then
+        for index, chapter in ipairs(chapters) do
+            if tonumber(chapter.chapterIdx or chapter.chapterIndex) == chapter_idx then
+                return index
+            end
+        end
+    end
+
+    local percent = math.max(0, math.min(100, tonumber(progress.progress) or 0))
+    return math.floor(percent / 100 * math.max(0, #chapters - 1)) + 1
+end
+
 function M:showBookMenu(book)
     local BookDetailView = require("weread.ui.book_detail_view")
     local book_id = book.book_id or book.bookId
@@ -857,6 +886,17 @@ function M:showBookMenu(book)
     end
     local updated = book.detail_updated_at
         and os.date("%Y-%m-%d %H:%M", book.detail_updated_at) or _("Never updated")
+    local resume_label
+    if is_full_cached then
+        resume_label = _("Full book cached")
+    elseif total_chapters and total_chapters > 0 then
+        local index = reading_chapter_index(book, book.chapters)
+        local chapter = book.chapters[index]
+        local uid = tostring(chapter.chapterUid or chapter.chapterId or index)
+        local cached = saved.cached_chapters and saved.cached_chapters[uid]
+        resume_label = file_exists(cached) and T(_("Chapter %1 · Cached"), index)
+            or T(_("Chapter %1 · Download"), index)
+    end
     local bottom_actions = {
         {
             text = _("⇩ Download full book"),
@@ -870,6 +910,7 @@ function M:showBookMenu(book)
         },
         {
             text = _("▤ Read"),
+            subtitle = resume_label,
             callback = self:safeCallback(_("Read"), function()
                 self:openBookForReading(book)
             end),
@@ -1207,7 +1248,7 @@ function M:downloadMPArticleAndRead(book, article)
     end)
 end
 
-function M:loadChapters(book, callback, force_refresh)
+function M:loadChapters(book, callback, force_refresh, busy)
     if not force_refresh then
         if book.chapters and #book.chapters > 0 then
             local book_id = book.book_id or book.bookId
@@ -1225,7 +1266,7 @@ function M:loadChapters(book, callback, force_refresh)
                 end
             end
             callback(book.chapters)
-            return
+            return true
         end
         local book_id = book.book_id or book.bookId
         local cached = self.library_db and self.library_db:getChapters(book_id) or nil
@@ -1249,14 +1290,16 @@ function M:loadChapters(book, callback, force_refresh)
         end
         if type(cached) == "table" and #cached > 0 then
             callback(cached)
-            return
+            return true
         end
     end
     if not self:requireLogin(true, false) then
         return
     end
-    self:runOnlineTask(_("Loading chapter list..."), function()
-        self:showBusy(_("Loading chapter list..."))
+    return self:runOnlineTask(_("Loading chapter list..."), function()
+        if not busy or self.busy_message ~= busy then
+            self:showBusy(_("Loading chapter list..."))
+        end
         local ok, chapters_or_err = pcall(function()
             Content.ensure_reader_state(self.client, book)
             return Content.fetch_catalog(self.client, book)
@@ -1287,7 +1330,7 @@ function M:loadChapters(book, callback, force_refresh)
     end)
 end
 
-function M:showChapterList(book, on_close)
+function M:showChapterList(book, on_close, current_file, busy)
     local ChapterListView = require("weread.ui.chapter_list_view")
     local function reloadBookCache()
         if not self.settings then return end
@@ -1305,6 +1348,35 @@ function M:showChapterList(book, on_close)
         -- Always rebuild from that persisted record instead of the snapshot
         -- captured when the chapter list was first opened.
         reloadBookCache()
+        local current_index
+        if current_file then
+            current_index = self:getChapterInfoFromFile(book, current_file)
+        end
+        local first_offline = current_index and current_index + 1
+            or reading_chapter_index(book, chapters)
+        local full_book_cached = file_exists(self:getFullBookCachePath(book))
+        local offline_count = self.settings:get("cache", {}).offline_chapter_count or 5
+        local last_offline = math.min(first_offline + offline_count - 1, #chapters)
+        local offline_total = math.max(0, last_offline - first_offline + 1)
+        local function missing_chapters()
+            local targets = {}
+            if not file_exists(self:getFullBookCachePath(book)) then
+                for index = first_offline, last_offline do
+                    local chapter = chapters[index]
+                    local uid = tostring(chapter.chapterUid or chapter.chapterId or index)
+                    if not file_exists(book.cached_chapters and book.cached_chapters[uid]) then
+                        targets[#targets + 1] = chapter
+                    end
+                end
+            end
+            return targets
+        end
+        local remaining = #missing_chapters()
+        local cache_next_label = remaining > 0
+            and T(_("Download %1 remaining"), remaining) or _("All cached")
+        local offline_summary = offline_total > 0 and T(
+            _("Offline: %1 chapters · %2 cached · %3 remaining"),
+            offline_total, offline_total - remaining, remaining) or nil
         local rows = {}
         for _i, chapter in ipairs(chapters) do
             local chapter_uid = chapter.chapterUid or chapter.chapterId
@@ -1331,6 +1403,9 @@ function M:showChapterList(book, on_close)
         view = ChapterListView.show({
             title = book.title or _("Chapter list"),
             chapters = rows,
+            current_index = current_index,
+            cache_next_label = cache_next_label,
+            offline_summary = offline_summary,
         }, {
             on_refresh = self:safeCallback(_("Refresh chapter list"), function()
                 self:loadChapters(book, function(refreshed_chapters)
@@ -1344,6 +1419,27 @@ function M:showChapterList(book, on_close)
                     showCatalog(chapters, view)
                 end)
             end),
+            on_cache_next = not full_book_cached and first_offline <= #chapters
+                and self:safeCallback(cache_next_label, function()
+                    reloadBookCache()
+                    local targets = missing_chapters()
+                    if #targets == 0 then
+                        self:showTransientInfo(_("These chapters are already cached."))
+                        return
+                    end
+                    self.downloader:start(book, targets, "chapters", {
+                        separate_chapters = true,
+                        keep_completed_chapters = true,
+                        offer_read = false,
+                        on_complete = function()
+                            UIManager:scheduleIn(0.1, function()
+                                if self._chapter_list_view == view then
+                                    showCatalog(chapters, view)
+                                end
+                            end)
+                        end,
+                    })
+                end) or nil,
             on_select = function(chapter)
                 self:openChapter(book, chapter)
             end,
@@ -1356,9 +1452,12 @@ function M:showChapterList(book, on_close)
         })
         self._chapter_list_view = view
     end
-    self:loadChapters(book, function(chapters)
+    return self:loadChapters(book, function(chapters)
+        if busy and self.busy_message == busy then
+            self:closeBusy()
+        end
         showCatalog(chapters)
-    end)
+    end, nil, busy)
 end
 
 function M:showChapterDownloadSelection(book, chapters, on_downloaded)
@@ -1441,12 +1540,15 @@ function M:showChapterDownloadSelection(book, chapters, on_downloaded)
         _("No chapters."), { items_per_page = perpage })
 end
 
-function M:openFile(path)
+function M:openFile(path, resume_fraction)
     if not path or path == "" then
         self:showInfo(_("No cached file."))
         return
     end
     self:closeWeReadUI()
+    if self.progress_sync then
+        self.progress_sync:queue_chapter_resume(path, resume_fraction)
+    end
     if self.ui.document then
         self.ui:switchDocument(path)
     else
@@ -1456,34 +1558,6 @@ end
 
 function M:openCachedBook(book)
     self:openFile(self:getFullBookCachePath(book))
-end
-
-local function reading_chapter_index(book, chapters, progress)
-    progress = progress or book
-    local local_position = book.last_local_position
-    local local_uid = type(local_position) == "table"
-        and (local_position.current_chapter_uid or local_position.chapter_uid)
-    local remote_index
-    for index, chapter in ipairs(chapters) do
-        local uid = tostring(chapter.chapterUid or chapter.chapterId or index)
-        if local_uid and uid == tostring(local_uid) then return index end
-        if progress.chapter_uid and uid == tostring(progress.chapter_uid) then
-            remote_index = index
-        end
-    end
-    if remote_index then return remote_index end
-
-    local chapter_idx = tonumber(progress.chapter_idx)
-    if chapter_idx then
-        for index, chapter in ipairs(chapters) do
-            if tonumber(chapter.chapterIdx or chapter.chapterIndex) == chapter_idx then
-                return index
-            end
-        end
-    end
-
-    local percent = math.max(0, math.min(100, tonumber(progress.progress) or 0))
-    return math.floor(percent / 100 * math.max(0, #chapters - 1)) + 1
 end
 
 local function nearest_cached_chapter(book, chapters, target_index)
@@ -1528,10 +1602,32 @@ function M:openBookForReading(book)
         local target = chapters[target_index]
         local uid = target and (target.chapterUid or target.chapterId)
         local cached = uid and book.cached_chapters and book.cached_chapters[tostring(uid)]
+        local fraction
+        if uid then
+            local local_position = book.last_local_position
+            local has_local_position = type(local_position) == "table"
+                and tostring(local_position.current_chapter_uid or local_position.chapter_uid)
+                    == tostring(uid)
+            local remote = progress or book
+            if has_local_position and not file_exists(cached) then
+                fraction = tonumber(local_position.chapter_fraction)
+                remote = local_position
+            end
+            if fraction == nil and (not has_local_position or not file_exists(cached))
+                and tostring(remote.chapter_uid) == tostring(uid)
+                and tonumber(remote.chapter_offset) then
+                local mapped = PositionMapper.remote_to_local(chapters, {
+                    chapter_uid = uid,
+                    chapter_offset = tonumber(remote.chapter_offset),
+                    percent = tonumber(remote.progress or remote.percent) or 0,
+                })
+                fraction = mapped and mapped.fraction
+            end
+        end
         if file_exists(cached) then
-            self:openFile(cached)
+            self:openFile(cached, fraction)
         elseif target and self:isNetworkOnline() then
-            self:openChapter(book, target)
+            self:openChapter(book, target, fraction)
         elseif #chapters == 0 and self:isNetworkOnline() then
             self:showInfo(_("No readable chapter found"))
         else
@@ -1567,17 +1663,19 @@ function M:openBookForReading(book)
 end
 
 -- Open a chapter, preferring its cached file and falling back to a download.
-function M:openChapter(book, chapter)
+function M:openChapter(book, chapter, resume_fraction)
     local chapter_uid = chapter.chapterUid or chapter.chapterId
     local cached = book.cached_chapters and book.cached_chapters[tostring(chapter_uid)]
     if cached and file_exists(cached) then
-        self:openFile(cached)
-    elseif self.downloader:promotePrefetch(book, chapter) then
+        self:openFile(cached, resume_fraction)
+    elseif self.downloader:promotePrefetch(book, chapter, resume_fraction) then
         -- The downloader promotes the background task to a visible progress
         -- dialog and opens the chapter as soon as the same task completes.
         return
+    elseif not self:isNetworkConnected() then
+        self:showInfo(_("This chapter is not cached. Connect to the internet to download it."))
     else
-        self:downloadChapterAndRead(book, chapter)
+        self:downloadChapterAndRead(book, chapter, resume_fraction)
     end
 end
 
@@ -1630,10 +1728,11 @@ function M:openProgressTargetChapter(book, chapter)
     return true
 end
 
-function M:downloadChapterAndRead(book, chapter)
+function M:downloadChapterAndRead(book, chapter, resume_fraction)
     return self.downloader:start(book, { chapter }, "chapter", {
         single_chapter = true,
         open_on_complete = true,
+        resume_fraction = resume_fraction,
     })
 end
 

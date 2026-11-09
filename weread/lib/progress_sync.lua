@@ -5,6 +5,9 @@ local logger = require("weread.lib.logger").scoped("ProgressSync")
 local ProgressSync = {}
 ProgressSync.__index = ProgressSync
 
+-- The reader can recreate the plugin when switching to another EPUB.
+local chapter_resume
+
 local OPEN_DELAY_SECONDS = 0.6
 local RESUME_RECHECK_SECONDS = 5 * 60
 local PULL_RETRY_DELAY_SECONDS = 15
@@ -223,6 +226,7 @@ function ProgressSync:_mark_verified(book_id, reason, local_position, remote)
         verified_source = reason,
         last_local_position = local_position,
         last_remote_position = remote,
+        last_verified_remote_position = remote,
         last_sync_error = false,
     })
     log("info", "verified:",
@@ -239,6 +243,7 @@ function ProgressSync:_clear_verified(reason)
     if self.current_book_id then
         self:_persist(self.current_book_id, {
             verified_at = false,
+            last_verified_remote_position = false,
             verified_source = reason or "cleared",
         })
     end
@@ -424,10 +429,44 @@ function ProgressSync:_keep_local(local_position, remote, options)
         remote
     )
     if options.upload_now then
-        self:_upload_snapshot(local_position, options.reason, true)
+        self:_upload_snapshot(local_position, options.reason, options.manual == true)
     elseif options.manual then
         self.notify("local_kept", { position = local_position })
     end
+end
+
+local function follows_local_reading(position, remote, saved, catalog)
+    local local_percent = PositionMapper.display_percent(position)
+    local remote_percent = PositionMapper.display_percent(remote)
+    local preceding = catalog.by_uid[tostring(remote.chapter_uid)]
+    local current = catalog.by_uid[tostring(position.chapter_uid)]
+    if not position.is_full_book and preceding and current
+        and preceding.index + 1 == current.index and preceding.words > 0
+        and (tonumber(position.chapter_fraction) or 1) <= 0.1
+        and math.abs(local_percent - remote_percent) <= SAME_THRESHOLD_PERCENT then
+        if remote.has_chapter_offset then
+            return remote.chapter_offset >= preceding.words * 0.9
+        end
+        local boundary = current.before / catalog.total_words * 100
+        return math.abs(remote_percent - boundary) <= 1
+    end
+
+    if remote_percent > local_percent then return false end
+    local previous = saved.last_verified_remote_position
+    previous = previous and previous.sources and previous.sources[remote.source] or previous
+    if PositionMapper.same_position(previous, remote, 0)
+        and previous.updated_at == remote.updated_at then
+        return true
+    end
+
+    local uploaded = saved.last_uploaded_position
+    if remote.has_chapter_offset and uploaded
+        and tostring(uploaded.chapter_uid) == tostring(remote.chapter_uid)
+        and math.abs((tonumber(uploaded.chapter_offset) or -2) - remote.chapter_offset) <= 1 then
+        return true
+    end
+
+    return false
 end
 
 function ProgressSync:_resolve(local_position, remote, context, options)
@@ -440,7 +479,15 @@ function ProgressSync:_resolve(local_position, remote, context, options)
         SAME_THRESHOLD_PERCENT
     )
 
-    if comparison == "same" and not remote.conflict then
+    local older_source
+    if remote.conflict and remote.sources then
+        older_source = remote.source == "web" and remote.sources.gateway or remote.sources.web
+    end
+    local stale_source = older_source and not options.manual
+        and remote.updated_at > 0 and older_source.updated_at > 0
+        and older_source.updated_at < remote.updated_at
+        and PositionMapper.display_percent(older_source) <= PositionMapper.display_percent(local_position)
+    if comparison == "same" and (not remote.conflict or stale_source) then
         self.dirty = false
         self:_mark_verified(
             context.book_id,
@@ -451,6 +498,23 @@ function ProgressSync:_resolve(local_position, remote, context, options)
         if options.manual then
             self.notify("already_synced", { position = local_position })
         end
+        return
+    end
+
+    if not options.manual then
+        local saved = self.settings:get("books", {})[context.book_id] or {}
+        local catalog = self.document_context and self.document_context.position_catalog
+            or PositionMapper.catalog(context.chapters)
+        local sources = remote.sources
+        local follows = follows_local_reading(local_position, remote, saved, catalog)
+        if follows and (not remote.conflict or stale_source or (sources
+            and follows_local_reading(local_position, sources.web, saved, catalog)
+            and follows_local_reading(local_position, sources.gateway, saved, catalog))) then
+            self:_keep_local(local_position, remote)
+            return
+        end
+        self:_keep_local(local_position, remote)
+        self.notify("automatic_local_kept", {})
         return
     end
 
@@ -679,7 +743,20 @@ function ProgressSync:cancel_pending_jump(reason)
     return true
 end
 
+function ProgressSync:queue_chapter_resume(path, fraction)
+    chapter_resume = nil
+    if type(fraction) == "number" and fraction > 0 and fraction <= 1 then
+        chapter_resume = { path = path, fraction = fraction }
+        local request = chapter_resume
+        self.scheduler:scheduleIn(10, function()
+            if chapter_resume == request then chapter_resume = nil end
+        end)
+    end
+end
+
 function ProgressSync:on_reader_ready()
+    local resume = chapter_resume
+    chapter_resume = nil
     self.generation = self.generation + 1
     local generation = self.generation
     self.current_book_id = nil
@@ -690,7 +767,7 @@ function ProgressSync:on_reader_ready()
     self.dirty = false
     self.state = "waiting"
 
-    self.scheduler:scheduleIn(OPEN_DELAY_SECONDS, function()
+    local function finish_open()
         if generation ~= self.generation then return end
         local book_id = self.detect_book()
         if not book_id or is_mp_book(book_id) then
@@ -714,6 +791,22 @@ function ProgressSync:on_reader_ready()
             return
         end
         self:_pull({ manual = false })
+    end
+
+    self.scheduler:scheduleIn(OPEN_DELAY_SECONDS, function()
+        if generation ~= self.generation then return end
+        local document = self.get_document()
+        if resume and document_path(document) == resume.path then
+            local page = document.getCurrentPage and tonumber(document:getCurrentPage())
+            local at_start = (page and page <= 1)
+                or (not page and (tonumber(document.current_pos) or 0) <= 0)
+            -- Keep the precise position restored by KOReader for an existing EPUB.
+            if at_start and self.goto_fraction(resume.fraction) then
+                self.scheduler:scheduleIn(0.15, finish_open)
+                return
+            end
+        end
+        finish_open()
     end)
 end
 

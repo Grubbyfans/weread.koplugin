@@ -3,6 +3,10 @@
 package.path = "./?.lua;" .. package.path
 
 local dialog_options, dialog_callbacks
+local scheduled
+package.preload["ui/uimanager"] = function()
+    return { scheduleIn = function(_self, _delay, callback) scheduled = callback end }
+end
 package.preload["weread.ui.end_of_book_dialog"] = function()
     return { show = function(options, callbacks)
         dialog_options = options
@@ -93,6 +97,26 @@ local context_host = {
 for key, value in pairs(Navigation) do
     if context_host[key] == nil then context_host[key] = value end
 end
+
+context_host.detectWeReadBook = function() return "book-1" end
+context_books["book-1"] = {}
+context_host.showBusy = function(self, label) self.busy_message = label end
+context_host.closeBusy = function(self) self.busy_message = nil end
+context_host.safeCallback = function(_self, _label, callback) return callback end
+local catalog_opens = 0
+context_host.showChapterList = function()
+    catalog_opens = catalog_opens + 1
+    return false
+end
+context_host:onShowWeReadChapterList()
+local first_task = scheduled
+context_host:onShowWeReadChapterList()
+expect(first_task and first_task == scheduled and catalog_opens == 0
+        and context_host.busy_message == "Loading chapter list...",
+    "repeated gestures share one scheduled catalog load and show busy immediately")
+first_task()
+expect(catalog_opens == 1 and not context_host.busy_message,
+    "a rejected catalog load dismisses the busy message")
 
 expect(context_host:showEndOfBookDialog(nil),
     "global quick menu builds without a WeRead book")

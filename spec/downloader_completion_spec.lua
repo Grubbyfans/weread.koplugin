@@ -181,6 +181,19 @@ eq(stored_books.book.cached_chapters["33"],
 eq(stored_books.book.cached_full_book, "/cache/book/full.epub",
     "partial download preserved the full-book cache")
 
+local partial = {
+    book = { book_id = "book", title = "Book" },
+    keep_completed_chapters = true,
+    state = { css = "" },
+}
+downloader:_saveCompletedChapter(partial, { chapterUid = 44 }, "44", "<p>44</p>", {})
+eq(stored_books.book.cached_chapters["44"], "/cache/book/chapter-44.epub",
+    "offline chapter is indexed before the batch finishes")
+partial.cancelled = true
+downloader:_step(partial)
+eq(stored_books.book.cached_chapters["44"], "/cache/book/chapter-44.epub",
+    "cancelling the offline batch retains the completed chapter")
+
 local incomplete_full_completion_count = 0
 local incomplete_full_completion_ok
 local incomplete_full_completion_value

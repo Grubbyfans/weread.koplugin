@@ -26,7 +26,7 @@ local _ = PluginUtil.tr
 local WeReadPlugin = WidgetContainer:extend{
     name = "weread",
     is_doc_only = false,
-    version = "1.7.2",
+    version = "1.7.15",
 }
 
 -- Stable entry point used by third-party launchers such as SimpleUI and ZenUI.
@@ -78,7 +78,7 @@ function WeReadPlugin:init()
         show_transient  = function(text, timeout) self:showTransientInfo(text, timeout) end,
         refresh_ui      = function() self:refreshUI() end,
         refresh_shelf   = function() self:refreshShelfCacheIndicators() end,
-        open_file       = function(path) self:openFile(path) end,
+        open_file       = function(path, fraction) self:openFile(path, fraction) end,
         safe_callback   = function(label, fn) return self:safeCallback(label, fn) end,
         require_login   = function(cookie, api_key) return self:requireLogin(cookie, api_key) end,
         run_online_task = function(label, fn)

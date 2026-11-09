@@ -258,13 +258,19 @@ function PositionMapper.remote_to_local(chapters, remote, options)
     }
 end
 
+function PositionMapper.display_percent(position)
+    if type(position) ~= "table" then return 0 end
+    local fraction = tonumber(position.fraction)
+    return fraction and clamp(fraction, 0, 1) * 100 or clamp(position.percent, 0, 100)
+end
+
 function PositionMapper.compare(local_position, remote, threshold)
     if type(local_position) ~= "table" or type(remote) ~= "table" then
         return "unknown", 0
     end
     threshold = math.max(0, tonumber(threshold) or 2)
-    local delta = (tonumber(remote.percent) or 0)
-        - (tonumber(local_position.percent) or 0)
+    local delta = PositionMapper.display_percent(remote)
+        - PositionMapper.display_percent(local_position)
     if local_position.chapter_uid ~= nil and remote.chapter_uid ~= nil
         and tostring(local_position.chapter_uid)
             ~= tostring(remote.chapter_uid)

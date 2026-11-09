@@ -84,7 +84,7 @@ local function fixture(remote, options)
             return { book = remote }
         end,
         get_web_progress = function()
-            return remote
+            return options.web_remote or remote
         end,
     }
     local sync = ProgressSync:new{
@@ -96,7 +96,7 @@ local function fixture(remote, options)
         get_book = function() return book end,
         get_chapters = options.get_chapters or function() return chapters end,
         refresh_catalog = options.refresh_catalog,
-        get_file_context = function()
+        get_file_context = options.get_file_context or function()
             return nil, nil, true
         end,
         run_online = options.run_online or function(_kind, callback)
@@ -150,6 +150,29 @@ local function fixture(remote, options)
         drain = drain,
     }
 end
+
+test("chapter resume follows the file across reader instances", function()
+    local source = fixture()
+    local target = fixture()
+    target.values.sync.pull_on_open = false
+    target.document.page = 1
+    source.sync:queue_chapter_resume(target.document.file, 0.4)
+    target.sync:on_reader_ready()
+    target.drain()
+    eq(target.jumps[1], 0.4, "requested chapter position")
+    eq(target.sync.local_position.percent, 40, "records position after jump")
+
+    source.sync:queue_chapter_resume(target.document.file, 0.7)
+    target.sync:on_reader_ready()
+    target.drain()
+    eq(#target.jumps, 1, "preserves KOReader's restored position")
+
+    source.sync:queue_chapter_resume("/cache/other.epub", 0.7)
+    target.document.page = 1
+    target.sync:on_reader_ready()
+    target.drain()
+    eq(#target.jumps, 1, "ignores a request for a different file")
+end)
 
 test("page turns reuse word counts and document changes rebuild them", function()
     local word_reads = 0
@@ -234,6 +257,91 @@ test("nearby progress within two percent is treated as aligned", function()
     eq(#f.choices, 0, "nearby position does not prompt")
 end)
 
+test("automatic sync keeps newer local progress when verified cloud is unchanged", function()
+    local remote = {
+        bookId = "book", progress = 25, chapterUid = 22,
+        chapterOffset = 150, updateTime = 10,
+    }
+    local f = fixture(remote)
+    f.sync:on_reader_ready()
+    f.drain()
+    eq(f.sync:status().verified, true, "initial progress verified")
+    f.document.page = 40
+    f.sync:on_reader_ready()
+    f.drain()
+    eq(#f.choices, 0, "unchanged cloud does not interrupt continued reading")
+    eq(f.sync:status().verified, true, "continued reading remains verified")
+    eq(#f.uploads, 0, "opening the chapter does not upload immediately")
+
+    remote.chapterOffset = 170
+    remote.updateTime = 11
+    f.sync:on_reader_ready()
+    f.drain()
+    eq(#f.choices, 0, "automatic sync does not interrupt reading")
+    eq(f.notifications[1].code, "automatic_local_kept", "cloud change triggers a light notice")
+end)
+
+test("opening the next chapter does not flag the previous chapter ending", function()
+    local remote = {
+        bookId = "book", progress = 40, chapterUid = 22,
+        chapterOffset = 299, updateTime = 10,
+    }
+    local f = fixture(remote, {
+        get_file_context = function() return 3, chapters[3], false end,
+    })
+    f.document.page = 1
+    f.sync:on_reader_ready()
+    f.drain()
+    eq(#f.choices, 0, "adjacent chapter boundary continues without a prompt")
+    eq(#f.uploads, 0, "opening the next chapter does not upload immediately")
+    eq(f.sync:status().verified, true, "normal boundary remains verified")
+    remote.chapterUid = 33
+    remote.chapterOffset = 200
+    f.sync:on_reader_ready()
+    f.drain()
+    eq(#f.choices, 0, "independent cloud progress keeps the current chapter")
+    eq(f.notifications[1].code, "automatic_local_kept", "independent cloud progress shows a notice")
+    eq(#f.jumps, 0, "automatic sync never jumps to the cloud position")
+    eq(#f.uploads, 0, "automatic conflict does not upload immediately")
+end)
+
+test("a rounded chapter boundary without a cloud offset continues automatically", function()
+    local f = fixture({ bookId = "book", progress = 41, chapterUid = 22, updateTime = 10 }, {
+        get_file_context = function() return 3, chapters[3], false end,
+    })
+    f.document.page = 1
+    f.sync:on_reader_ready()
+    f.drain()
+    eq(#f.choices, 0, "previous chapter at the rounded boundary is not a conflict")
+end)
+
+test("automatic sync accepts the matching newer source when the other source lags", function()
+    local f = fixture({ bookId = "book", progress = 91, chapterUid = 33, updateTime = 20 }, {
+        web_remote = { bookId = "book", progress = 40, chapterUid = 22, updateTime = 10 },
+    })
+    f.document.page = 90
+    f.sync:on_reader_ready()
+    f.drain()
+    eq(#f.choices, 0, "90% and 91% in the same chapter do not interrupt reading")
+    eq(f.sync:status().verified, true, "the matching newer source verifies the position")
+    f.sync:sync_now()
+    f.drain()
+    eq(#f.choices, 1, "manual sync still exposes conflicting sources")
+end)
+
+test("automatic sync recognizes a previous upload echoed by WeRead", function()
+    local f = fixture({
+        bookId = "book", progress = 25, chapterUid = 22,
+        chapterOffset = 150, updateTime = 20,
+    })
+    f.values.books.book.last_uploaded_position = { chapter_uid = 22, chapter_offset = 150 }
+    f.document.page = 45
+    f.sync:on_reader_ready()
+    f.drain()
+    eq(#f.choices, 0, "upload echoed by cloud is not a new conflict")
+    eq(f.sync:status().verified, true, "local continuation remains verified")
+end)
+
 test("unresolved conflict blocks reports and local choice uploads", function()
     local f = fixture({
         bookId = "book",
@@ -243,7 +351,10 @@ test("unresolved conflict blocks reports and local choice uploads", function()
         chapterOffset = 100,
         updateTime = 10,
     })
+    f.values.sync.pull_on_open = false
     f.sync:on_reader_ready()
+    f.drain()
+    f.sync:sync_now()
     f.drain()
     eq(#f.choices, 1, "conflict dialog requested")
     local position, reason, applies = f.sync:position_for_report("book")
@@ -253,6 +364,7 @@ test("unresolved conflict blocks reports and local choice uploads", function()
     f.choices[1].keep_local()
     eq(f.sync:status().verified, true, "local choice verifies")
     eq(#f.uploads, 1, "local choice uploads immediately")
+    eq(f.notifications[1].code, "upload_success", "manual upload still reports success")
     eq(f.uploads[1].chapter_offset, 150, "uploaded immutable position")
 end)
 
@@ -287,7 +399,10 @@ test("remote choice jumps and verifies before reporting", function()
         chapterOffset = 100,
         updateTime = 10,
     })
+    f.values.sync.pull_on_open = false
     f.sync:on_reader_ready()
+    f.drain()
+    f.sync:sync_now()
     f.drain()
     f.choices[1].use_remote()
     f.drain()
@@ -317,7 +432,10 @@ test("busy read report is retried with the immutable snapshot", function()
         uploaded = position
         return true, { accepted = true }
     end
+    f.values.sync.pull_on_open = false
     f.sync:on_reader_ready()
+    f.drain()
+    f.sync:sync_now()
     f.drain()
     f.choices[1].keep_local()
     -- Mutating the live page must not change the already captured retry.
@@ -365,7 +483,10 @@ test("single chapter cloud choice waits for target chapter then jumps", function
         return true
     end
     f.document.page = 50
+    f.values.sync.pull_on_open = false
     f.sync:on_reader_ready()
+    f.drain()
+    f.sync:sync_now()
     f.drain()
     eq(#f.choices, 1, "chapter conflict requested")
     f.choices[1].use_remote()
@@ -395,7 +516,10 @@ test("cancelling target chapter download clears the pending jump", function()
     end
     f.sync.open_chapter = function() return true end
     f.document.page = 50
+    f.values.sync.pull_on_open = false
     f.sync:on_reader_ready()
+    f.drain()
+    f.sync:sync_now()
     f.drain()
     f.choices[1].use_remote()
     eq(f.sync:cancel_pending_jump("cancelled"), true, "pending cancelled")

@@ -13,6 +13,7 @@ local reading_fields = {
     last_local_position = true,
     last_pull_at = true,
     last_remote_position = true,
+    last_verified_remote_position = true,
     last_sync_error = true,
     last_upload_at = true,
     last_uploaded_position = true,

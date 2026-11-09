@@ -264,7 +264,7 @@ function Downloader:isPrefetching(book, chapter)
         and tostring(target_uid or "") == tostring(chapter_uid or "")
 end
 
-function Downloader:promotePrefetch(book, chapter)
+function Downloader:promotePrefetch(book, chapter, resume_fraction)
     local job = self:getActivePrefetch()
     local target = job and job.chapters and job.chapters[1]
     local job_book_id = job and job.book and (job.book.book_id or job.book.bookId)
@@ -276,14 +276,18 @@ function Downloader:promotePrefetch(book, chapter)
         return false
     end
     job.open_on_complete = true
+    job.resume_fraction = resume_fraction
     job.promoted = true
+    job.stage_title = job.stage_title or _("Waiting for chapter download...")
     self:_ensureProgressDialog(job)
     return true
 end
 
 function Downloader:isPromotedPrefetch(book, chapter)
-    return self:isPrefetching(book, chapter)
-        and self._active_job.promoted == true
+    if self:isPrefetching(book, chapter) and self._active_job.promoted then
+        return true, self._active_job.resume_fraction
+    end
+    return false
 end
 
 function Downloader:_ensureProgressDialog(dl)
@@ -291,7 +295,7 @@ function Downloader:_ensureProgressDialog(dl)
     local progress_dialog = DownloadDialog:new{
         title = dl.stage_title or T(_("Downloading: %1"), dl.book.title or ""),
         description = dl.resumable and _("You can cancel at any time. Completed chapters are kept.\nChoose Download full book again to resume.") or nil,
-        progress_max = dl.total,
+        progress_max = dl.prefetch and 0 or dl.total,
         buttons = {{
             {
                 text = _("Cancel download"),
@@ -334,7 +338,7 @@ function Downloader:_prefetchStage(dl, state)
     local stage = state and state.stage
     local title
     if stage == "reader" then
-        title = T(_("Preparing chapter %1/%2"), "1", "1")
+        title = _("Preparing chapter download...")
     elseif stage == "source" then
         local attempt = tonumber(state.attempt) or 1
         if attempt > 1 then
@@ -354,7 +358,7 @@ function Downloader:_prefetchStage(dl, state)
     else
         title = T(_("Processing chapter %1/%2"), "1", "1")
     end
-    self:_setStage(dl, title, stage == "epub" and 1 or 0)
+    self:_setStage(dl, title)
 end
 
 function Downloader:_applyPrefetchResult(dl, result)
@@ -410,7 +414,7 @@ function Downloader:_applyPrefetchResult(dl, result)
         "chapter_uid=", uid, "path=", value.path)
     self:_notifyCompletion(dl, true, value.path)
     self:_finishJob(dl)
-    if dl.open_on_complete then self.open_file(value.path) end
+    if dl.open_on_complete then self.open_file(value.path, dl.resume_fraction) end
 end
 
 function Downloader:_startPrefetchWorker(dl)
@@ -432,7 +436,8 @@ function Downloader:_startPrefetchWorker(dl)
                 dl.chapters[1], context)
         end,
         on_launch = function(pid, available_kb)
-            if self._active_job ~= dl then return end
+            if self._active_job ~= dl or dl.cancelled then return end
+            self:_prefetchStage(dl, { stage = "reader" })
             self:_beginStandby()
             dl.standby_guard = true
             logger.info("prefetch worker started:", "pid=", tostring(pid),
@@ -604,11 +609,13 @@ function Downloader:start(book, chapters, suffix, options)
         },
         single_chapter = options.single_chapter == true,
         separate_chapters = options.separate_chapters == true,
+        keep_completed_chapters = options.separate_chapters and options.keep_completed_chapters == true,
         include_annotations = false,
         open_on_complete = options.open_on_complete == true,
         offer_read = options.offer_read ~= false,
         silent_completion = options.silent_completion == true,
         prefetch = options.prefetch == true,
+        resume_fraction = options.resume_fraction,
         start_delay = tonumber(options.start_delay) or 0,
         on_start = options.on_start,
         on_complete = options.on_complete,
@@ -948,6 +955,49 @@ function Downloader:_startFootnotes(dl)
     self:_scheduleGuarded(dl, function() self:_footnoteStep(dl) end)
 end
 
+function Downloader:_saveCompletedChapter(dl, chapter, uid, xhtml, assets)
+    local css = dl.state.css
+    local scan_uid = tostring(chapter.chapterUid or dl.index)
+    local scan = dl.footnote_scans and dl.footnote_scans[scan_uid]
+    if scan then
+        dl.footnote_scans[scan_uid] = nil
+        local ok, transformed, stats = pcall(function()
+            local index = Footnotes.build_book_index({ [scan_uid] = scan }, { chapter })
+            return Footnotes.transform_chapter(xhtml, scan, index)
+        end)
+        if ok and Footnotes.validate(transformed) then
+            xhtml = transformed
+            add_footnote_stats(dl.footnote_stats, stats)
+            if Footnotes.has_converted(stats) then
+                css = (css or "") .. "\n" .. Footnotes.FOOTNOTES_CSS
+            end
+        else
+            dl.footnote_stats.fallback = dl.footnote_stats.fallback + 1
+        end
+    end
+    local path = Content.save_chapter_epub(
+        self.settings, dl.book, chapter, xhtml, assets, css)
+    local book_id = dl.book.book_id or dl.book.bookId
+    local books = self.settings:get("books", {})
+    local record = books[book_id] or dl.book
+    dl.book.cached_chapters = dl.book.cached_chapters or {}
+    dl.book.cached_chapters[uid] = path
+    if record ~= dl.book then
+        record.cached_chapters = record.cached_chapters or {}
+        record.cached_chapters[uid] = path
+        record.cache_dir = dl.book.cache_dir or record.cache_dir
+        local annotation = dl.book.annotation_documents and dl.book.annotation_documents[path]
+        if annotation then
+            record.annotation_documents = record.annotation_documents or {}
+            record.annotation_documents[path] = annotation
+        end
+    end
+    books[book_id] = record
+    self.settings:set("books", books)
+    self.settings:flush()
+    dl.first_saved_chapter = dl.first_saved_chapter or path
+end
+
 function Downloader:_finishChapter(dl)
     if dl.cancelled then self:_step(dl); return end
     if not dl.current then return end
@@ -980,7 +1030,15 @@ function Downloader:_finishChapter(dl)
     local xhtml, chapter_assets = result.xhtml, result.assets
     dl.state = result.state
     local uid = tostring(chapter.chapterUid or dl.index)
-    if dl.resumable then
+    if dl.keep_completed_chapters then
+        uid = tostring(chapter.chapterUid or chapter.chapterId or dl.index)
+        self:_setStage(dl, _("Building EPUB..."), dl.index - 0.1)
+        local saved, err = pcall(self._saveCompletedChapter, self, dl, chapter, uid, xhtml, chapter_assets)
+        if not saved then
+            self:_failChapter(dl, err)
+            return
+        end
+    elseif dl.resumable then
         Content.save_full_download_css(dl.workspace, dl.state.css)
         Content.save_full_download_chapter(dl.workspace, chapter, dl.index, xhtml)
         dl.completed[dl.index] = true
@@ -988,13 +1046,15 @@ function Downloader:_finishChapter(dl)
     else
         dl.bodies[uid] = xhtml
     end
-    dl.assets_by_uid = dl.assets_by_uid or {}
-    dl.assets_by_uid[uid] = chapter_assets or {}
     table.insert(dl.selected, chapter)
-    if not dl.resumable then
-        for _i, asset in ipairs(chapter_assets or {}) do
-            table.insert(dl.assets, asset)
-            dl.asset_bytes = (dl.asset_bytes or 0) + (tonumber(asset.size) or 0)
+    if not dl.keep_completed_chapters then
+        dl.assets_by_uid = dl.assets_by_uid or {}
+        dl.assets_by_uid[uid] = chapter_assets or {}
+        if not dl.resumable then
+            for _i, asset in ipairs(chapter_assets or {}) do
+                table.insert(dl.assets, asset)
+                dl.asset_bytes = (dl.asset_bytes or 0) + (tonumber(asset.size) or 0)
+            end
         end
     end
     logger.info("download assets staged:",
@@ -1013,6 +1073,7 @@ end
 
 function Downloader:_step(dl)
     if dl.cancelled then
+        if dl.first_saved_chapter then self.refresh_shelf() end
         if dl.resumable then
             self:_preserveWorkspace(dl, dl.cancel_reason or "cancelled")
         else
@@ -1100,13 +1161,16 @@ function Downloader:_step(dl)
             end
             dl.workspace_verified = true
         end
-        if dl.footnote_scans and not dl.footnotes_done then
-            self:_startFootnotes(dl)
-            return
+        if not dl.keep_completed_chapters then
+            if dl.footnote_scans and not dl.footnotes_done then
+                self:_startFootnotes(dl)
+                return
+            end
+            self:_setStage(dl, _("Building EPUB..."), dl.total)
         end
-        self:_setStage(dl, _("Building EPUB..."), dl.total)
         local save_started = time.now()
         local ok, path, chapter_paths = pcall(function()
+            if dl.keep_completed_chapters then return dl.first_saved_chapter end
             if dl.single_chapter then
                 local chapter = dl.selected[1]
                 local uid = tostring(chapter.chapterUid or 1)
@@ -1168,7 +1232,7 @@ function Downloader:_step(dl)
         self:_releaseStandby(dl)
         local books = self.settings:get("books", {})
         local book_id = dl.book.book_id or dl.book.bookId
-        if book_id then
+        if book_id and not dl.keep_completed_chapters then
             local record = books[book_id]
             if not record then
                 record = {}
@@ -1285,7 +1349,7 @@ function Downloader:_step(dl)
         if dl.open_on_complete then
             self:_notifyCompletion(dl, true, path)
             self:_finishJob(dl)
-            self.open_file(path)
+            self.open_file(path, dl.resume_fraction)
             return
         end
         self:_notifyCompletion(dl, true, path)

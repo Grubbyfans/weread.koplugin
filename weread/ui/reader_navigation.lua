@@ -1,5 +1,6 @@
 -- End-of-book navigation dialog integration.
 local EndOfBookDialog = require("weread.ui.end_of_book_dialog")
+local UIManager = require("ui/uimanager")
 local PluginUtil = require("weread.lib.plugin_util")
 local WeRead = require("weread.lib.protocol")
 
@@ -36,6 +37,30 @@ function M:onShowWeReadSearch()
     return true
 end
 
+function M:onShowWeReadChapterList()
+    if self.busy_message or self._chapter_list_view then return true end
+    local book_id = self:detectWeReadBook()
+    local books = self.settings:get("books", {})
+    local book = book_id and (books[tostring(book_id)] or books[book_id])
+    local document = self.ui.document
+    if book and document and not WeRead.is_mp_book(book_id) then
+        local label = _("Loading chapter list...")
+        self:showBusy(label)
+        local busy = self.busy_message
+        UIManager:scheduleIn(0.1, self:safeCallback(label, function()
+            if self.busy_message ~= busy then return end
+            local started = self.ui.document == document
+                and self:showChapterList(book, nil, document.file, busy)
+            if not started and self.busy_message == busy then
+                self:closeBusy()
+            end
+        end))
+    else
+        self:showTransientInfo(_("This action requires an open WeRead book."), 1)
+    end
+    return true
+end
+
 function M:showEndOfBookDialog(book_id)
     local file_path = self.ui.document and self.ui.document.file
     if not file_path then return false end
@@ -69,7 +94,7 @@ function M:showEndOfBookDialog(book_id)
     EndOfBookDialog.show({
         show_chapter_nav = true,
         show_next_chapter = true,
-        enable_chapter_list = chapters ~= nil,
+        enable_chapter_list = is_regular_weread_book,
         enable_next_chapter = next_chapter ~= nil,
         enable_book_details = book ~= nil,
         enable_sync_progress = is_regular_weread_book,
@@ -82,8 +107,8 @@ function M:showEndOfBookDialog(book_id)
             self:showSearch()
         end,
         on_chapter_list = function()
-            if chapters then
-                self:showChapterList(book)
+            if is_regular_weread_book then
+                self:showChapterList(book, nil, file_path)
             else
                 show_context_required()
             end

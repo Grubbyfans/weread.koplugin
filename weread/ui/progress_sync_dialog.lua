@@ -4,6 +4,7 @@ local UIManager = require("ui/uimanager")
 local T = require("ffi/util").template
 
 local I18n = require("weread.lib.i18n")
+local PositionMapper = require("weread.lib.position_mapper")
 
 local ProgressSyncDialog = {}
 
@@ -12,7 +13,7 @@ local function _(text)
 end
 
 local function percent(position)
-    return string.format("%.0f", tonumber(position and position.percent) or 0)
+    return string.format("%.0f", PositionMapper.display_percent(position))
 end
 
 function ProgressSyncDialog.show_choice(context)
@@ -44,6 +45,14 @@ function ProgressSyncDialog.show_choice(context)
 end
 
 function ProgressSyncDialog.notify(code, data)
+    if code == "automatic_local_kept" then
+        local Notification = require("ui/widget/notification")
+        UIManager:show(Notification:new{
+            text = _("Cloud progress differs. Kept your current reading position."),
+            timeout = 3,
+        })
+        return
+    end
     data = data or {}
     local text
     if code == "upload_success" then

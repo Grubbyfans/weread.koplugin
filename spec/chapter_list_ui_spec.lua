@@ -87,7 +87,14 @@ local fake_menu = {
 local downloaded_options
 local returned_to_parent = false
 local opened_chapter
+local quick_targets, quick_options
 local host = {
+    getFullBookCachePath = function() return nil end,
+    downloader = {
+        start = function(_self, _book, targets, _suffix, options)
+            quick_targets, quick_options = targets, options
+        end,
+    },
     safeCallback = function(_self, _label, callback) return callback end,
     loadChapters = function(_self, _book, callback) callback(chapters) end,
     showList = function(_self, title, items, _empty, options)
@@ -107,9 +114,11 @@ for key, value in pairs(Library) do
 end
 
 local persisted_books = {}
+local offline_cache_settings = {}
 host.settings = {
     get = function(_self, key, default)
         if key == "books" then return persisted_books end
+        if key == "cache" then return offline_cache_settings end
         return default
     end,
 }
@@ -122,6 +131,27 @@ expect(catalog_view_data.chapters[1].status == "100 words",
 expect(type(catalog_view_callbacks.on_refresh) == "function"
     and type(catalog_view_callbacks.on_select_download) == "function",
     "chapter catalog keeps refresh and multi-download actions")
+host.getChapterInfoFromFile = function(_self, _book, path)
+    if path == "/cache/chapter-4.epub" then return 4 end
+end
+host:showChapterList(book, nil, "/cache/chapter-4.epub")
+expect(catalog_view_data.current_index == 4 and #catalog_view_data.chapters == 7,
+    "reader catalog includes the full book and points to the open chapter")
+existing_files["/cache/chapter-5.epub"] = true
+book.cached_chapters["5"] = "/cache/chapter-5.epub"
+catalog_view_callbacks.on_cache_next()
+expect(#quick_targets == 2 and quick_targets[1] == chapters[6] and quick_targets[2] == chapters[7],
+    "offline preparation skips cached chapters and stops at the end of the book")
+expect(quick_options.separate_chapters and quick_options.offer_read == false,
+    "offline preparation saves individual chapters without opening them")
+offline_cache_settings.offline_chapter_count = 2
+host:showChapterList(book, nil, "/cache/chapter-4.epub")
+catalog_view_callbacks.on_cache_next()
+expect(catalog_view_data.cache_next_label == "Download 1 remaining"
+    and catalog_view_data.offline_summary == "Offline: 2 chapters · 1 cached · 1 remaining"
+    and #quick_targets == 1 and quick_targets[1] == chapters[6],
+    "the configured window shows cached and remaining chapters and downloads only what is missing")
+expect(quick_options.keep_completed_chapters, "offline preparation persists completed chapters immediately")
 catalog_view_callbacks.on_select(chapters[1])
 expect(opened_chapter == chapters[1], "chapter row opens the selected chapter")
 expect(downloaded_options == nil, "chapter row does not start a batch download")

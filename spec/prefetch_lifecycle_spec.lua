@@ -1,4 +1,4 @@
--- Focused tests for the two-chapter prefetch window and notices.
+-- Focused tests for the configurable prefetch window and notices.
 
 package.path = "./?.lua;" .. package.path
 
@@ -112,8 +112,8 @@ expect(#starts == 1 and starts[1].chapters[1] == chapters[2],
     "only the immediate next chapter is selected")
 expect(starts[1].options.include_annotations == false,
     "prefetch creates clean text regardless of the legacy annotation preference")
-expect(starts[1].options.start_delay == 0.7,
-    "visible start notice gets time to close before network work")
+expect(starts[1].options.start_delay == 0.1,
+    "visible start notice does not hold up the background worker")
 
 starts[1].options.on_start()
 starts[1].options.on_complete(true, "/cache/two.epub")
@@ -133,7 +133,15 @@ book.cached_chapters["3"] = "/cache/three.epub"
 existing["/cache/three.epub"] = true
 starts[2].options.on_complete(true, "/cache/three.epub")
 scheduled()
-expect(#starts == 2, "prefetch stops once both slots are cached")
+expect(#starts == 2, "prefetch stops once both default slots are cached")
+cache.prefetch_chapter_count = 3
+host:maybePrefetchNextChapter("book")
+expect(#starts == 3 and starts[3].chapters[1] == chapters[4],
+    "increasing the count fills the newly available slot")
+cache.prefetch_chapter_count = 1
+host:maybePrefetchNextChapter("book")
+expect(#starts == 3, "reducing the count keeps prefetch within the smaller window")
+cache.prefetch_chapter_count = nil
 
 starts = {}
 notices = {}

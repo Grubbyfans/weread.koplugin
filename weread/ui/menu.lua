@@ -31,6 +31,12 @@ function M:onDispatcherRegisterActions()
         title = _("WeRead · Quick menu"),
         reader = true,
     })
+    Dispatcher:registerAction("weread_chapter_list", {
+        category = "none",
+        event = "ShowWeReadChapterList",
+        title = _("WeRead · Full chapter list"),
+        reader = true,
+    })
     Dispatcher:registerAction("weread_sync_progress", {
         category = "none",
         event = "WeReadSyncProgress",
@@ -412,11 +418,22 @@ function M:getSettingsMenuItems()
                         end),
                     },
                     {
+                        text_func = function()
+                            local count = self.settings:get("cache").offline_chapter_count or 5
+                            return T(_("One-tap cache chapter count: %1"), count)
+                        end,
+                        keep_menu_open = true,
+                        callback = self:safeCallback(_("One-tap cache chapter count"),
+                            function(touchmenu_instance)
+                                self:showOfflineChapterCountPicker(touchmenu_instance)
+                            end),
+                    },
+                    {
                         text = _("Chapter prefetch"),
                         sub_item_table_func = function()
                             return {
                                 {
-                                    text = _("Automatically prefetch next two chapters"),
+                                    text = _("Automatically prefetch upcoming chapters"),
                                     keep_menu_open = true,
                                     check_callback_updates_menu = true,
                                     checked_func = function()
@@ -424,7 +441,7 @@ function M:getSettingsMenuItems()
                                             == true
                                     end,
                                     callback = self:safeCallback(
-                                        _("Automatically prefetch next two chapters"),
+                                        _("Automatically prefetch upcoming chapters"),
                                         function(touchmenu_instance)
                                             local cache = self.settings:get("cache")
                                             local function apply(enabled)
@@ -437,8 +454,10 @@ function M:getSettingsMenuItems()
                                                         "setting_disabled")
                                                 elseif self._current_weread_book_id then
                                                     local book_id = self._current_weread_book_id
+                                                    local session = self._reader_session_gen
                                                     UIManager:scheduleIn(0.1, function()
-                                                        if self._current_weread_book_id == book_id then
+                                                        if self._reader_session_gen == session
+                                                            and self._current_weread_book_id == book_id then
                                                             self:maybePrefetchNextChapter(book_id)
                                                         end
                                                     end)
@@ -495,6 +514,17 @@ function M:getSettingsMenuItems()
                                                     _("Confirm"), function() apply(true) end),
                                                 cancel_text = _("Cancel"),
                                             })
+                                        end),
+                                },
+                                {
+                                    text_func = function()
+                                        local count = self.settings:get("cache").prefetch_chapter_count or 2
+                                        return T(_("Chapters to prefetch: %1"), count)
+                                    end,
+                                    keep_menu_open = true,
+                                    callback = self:safeCallback(_("Chapters to prefetch"),
+                                        function(touchmenu_instance)
+                                            self:showChapterPrefetchCountPicker(touchmenu_instance)
                                         end),
                                 },
                                 {
@@ -944,6 +974,59 @@ function M:getUpdateMenuItems()
             end),
     })
     return items
+end
+
+function M:showOfflineChapterCountPicker(touchmenu_instance)
+    local SpinWidget = require("ui/widget/spinwidget")
+    UIManager:show(SpinWidget:new{
+        value = self.settings:get("cache").offline_chapter_count or 5,
+        value_min = 1,
+        value_max = 100,
+        value_step = 1,
+        value_hold_step = 10,
+        title_text = _("One-tap cache chapter count"),
+        callback = self:safeCallback(_("One-tap cache chapter count"), function(spin)
+            local cache = self.settings:get("cache")
+            cache.offline_chapter_count = spin.value
+            self.settings:set("cache", cache)
+            self.settings:flush()
+            if touchmenu_instance then touchmenu_instance:updateItems() end
+        end),
+    })
+end
+
+function M:showChapterPrefetchCountPicker(touchmenu_instance)
+    local SpinWidget = require("ui/widget/spinwidget")
+    UIManager:show(SpinWidget:new{
+        value = self.settings:get("cache").prefetch_chapter_count or 2,
+        value_min = 1,
+        value_max = 20,
+        value_step = 1,
+        title_text = _("Chapters to prefetch"),
+        callback = self:safeCallback(_("Chapters to prefetch"), function(spin)
+            local cache = self.settings:get("cache")
+            local previous = cache.prefetch_chapter_count or 2
+            if spin.value == previous then return end
+            cache.prefetch_chapter_count = spin.value
+            self.settings:set("cache", cache)
+            self.settings:flush()
+            local book_id = self._current_weread_book_id
+            if book_id and cache.auto_prefetch_next_chapter then
+                local job = self.downloader:getActivePrefetch()
+                if spin.value < previous and not (job and job.promoted) then
+                    self.downloader:cancelPrefetch("prefetch_count_changed")
+                end
+                local session = self._reader_session_gen
+                UIManager:scheduleIn(0.1, function()
+                    if self._reader_session_gen == session
+                        and self._current_weread_book_id == book_id then
+                        self:maybePrefetchNextChapter(book_id)
+                    end
+                end)
+            end
+            if touchmenu_instance then touchmenu_instance:updateItems() end
+        end),
+    })
 end
 
 -- Let the user set the thought popup height as a percentage of the screen.

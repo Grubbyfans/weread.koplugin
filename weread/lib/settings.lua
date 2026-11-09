@@ -35,6 +35,8 @@ local defaults = {
         download_underlines_and_thoughts = false,
         prefetch_annotations = false,
         auto_prefetch_next_chapter = true,
+        prefetch_chapter_count = 2,
+        offline_chapter_count = 5,
         show_prefetch_notifications = true,
         show_annotations = true,
         -- When true, taps in the left/right edge zones never open thought popups
@@ -179,6 +181,18 @@ function Settings:new()
     end
     if cache.auto_prefetch_next_chapter == nil then
         cache.auto_prefetch_next_chapter = true
+        cache_changed = true
+    end
+    local prefetch_count = math.max(1, math.min(20,
+        math.floor(tonumber(cache.prefetch_chapter_count) or defaults.cache.prefetch_chapter_count)))
+    if cache.prefetch_chapter_count ~= prefetch_count then
+        cache.prefetch_chapter_count = prefetch_count
+        cache_changed = true
+    end
+    local offline_count = math.max(1, math.min(100,
+        math.floor(tonumber(cache.offline_chapter_count) or defaults.cache.offline_chapter_count)))
+    if cache.offline_chapter_count ~= offline_count then
+        cache.offline_chapter_count = offline_count
         cache_changed = true
     end
     if cache.show_prefetch_notifications == nil then

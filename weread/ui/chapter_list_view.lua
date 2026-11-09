@@ -27,6 +27,7 @@ local function _(text) return I18n.tr(text) end
 local ChapterRow = InputContainer:extend{
     text = "",
     status = "",
+    current = false,
     width = nil,
     callback = nil,
     show_parent = nil,
@@ -50,7 +51,7 @@ function ChapterRow:init()
         padding_left = padding, padding_right = padding,
         padding_top = Size.padding.large,
         padding_bottom = Size.padding.large,
-        background = Blitbuffer.COLOR_WHITE,
+        background = self.current and Blitbuffer.COLOR_LIGHT_GRAY or Blitbuffer.COLOR_WHITE,
         show_parent = self.show_parent,
         HorizontalGroup:new{
             align = "center",
@@ -91,17 +92,21 @@ end
 local ChapterListView = FocusManager:extend{
     title = nil,
     chapters = nil,
+    current_index = nil,
     on_refresh = nil,
     on_select_download = nil,
+    on_cache_next = nil,
+    cache_next_label = nil,
+    offline_summary = nil,
     on_select = nil,
     on_close = nil,
 }
 
 function ChapterListView:toolbar()
-    local half = math.floor(self.screen_w / 2)
+    local width = math.floor(self.screen_w / (self.on_cache_next and 3 or 2))
     local refresh_button = Button:new{
         text = _("↻ Refresh chapter list"),
-        width = half,
+        width = width,
         radius = 0, margin = 0,
         bordersize = Size.border.thin,
         text_font_size = 19,
@@ -111,7 +116,7 @@ function ChapterListView:toolbar()
     }
     local select_button = Button:new{
         text = _("✓ Select chapters to download"),
-        width = self.screen_w - half,
+        width = self.on_cache_next and width or self.screen_w - width,
         radius = 0, margin = 0,
         bordersize = Size.border.thin,
         text_font_size = 19,
@@ -122,7 +127,19 @@ function ChapterListView:toolbar()
         end,
     }
     self._toolbar_buttons = { refresh_button, select_button }
-    return HorizontalGroup:new{ refresh_button, select_button }
+    if self.on_cache_next then
+        table.insert(self._toolbar_buttons, Button:new{
+            text = self.cache_next_label,
+            width = self.screen_w - 2 * width,
+            radius = 0, margin = 0,
+            bordersize = Size.border.thin,
+            text_font_size = 19,
+            text_font_bold = false,
+            show_parent = self,
+            callback = self.on_cache_next,
+        })
+    end
+    return HorizontalGroup:new{ unpack(self._toolbar_buttons) }
 end
 
 function ChapterListView:content()
@@ -131,10 +148,12 @@ function ChapterListView:content()
         HorizontalSpan:new{ width = self.list_width },
     }
     self._chapter_rows = {}
-    for _i, chapter in ipairs(self.chapters or {}) do
+    for index, chapter in ipairs(self.chapters or {}) do
+        local current = index == self.current_index
         local row = ChapterRow:new{
             text = chapter.title,
-            status = chapter.status,
+            status = current and _("Current chapter") or chapter.status,
+            current = current,
             width = self.list_width,
             show_parent = self,
             callback = function()
@@ -172,10 +191,24 @@ function ChapterListView:init()
         show_parent = self,
     }
     local toolbar = self:toolbar()
+    local header = VerticalGroup:new{ align = "center", self.title_bar }
+    if self.offline_summary then
+        table.insert(header, FrameContainer:new{
+            bordersize = 0,
+            margin = 0,
+            padding = Size.padding.small,
+            TextWidget:new{
+                text = self.offline_summary,
+                face = Font:getFace("cfont", 16),
+                max_width = self.screen_w - 2 * Size.padding.small,
+            },
+        })
+    end
+    table.insert(header, toolbar)
     local scroll = ScrollableContainer:new{
         dimen = Geom:new{
             w = self.screen_w,
-            h = self.screen_h - self.title_bar:getHeight() - toolbar:getSize().h,
+            h = self.screen_h - header:getSize().h,
         },
         show_parent = self,
         self:content(),
@@ -188,21 +221,31 @@ function ChapterListView:init()
     for _i, button in ipairs(self._toolbar_buttons) do outside_scroll[button] = true end
     FocusNav.apply(self, rows, { scroll = scroll, outside_scroll = outside_scroll })
     -- Chapters follow the toolbar row.
-    FocusNav.initialFocus(self, 1, #rows > 1 and 2 or 1)
+    local initial_row = self.current_index and self.current_index + 1
+    FocusNav.initialFocus(self, 1, initial_row or (#rows > 1 and 2 or 1))
     self[1] = FrameContainer:new{
         background = Blitbuffer.COLOR_WHITE,
         bordersize = 0, padding = 0, margin = 0,
         dimen = self.dimen:copy(),
-        VerticalGroup:new{ align = "left", self.title_bar, toolbar, scroll },
+        VerticalGroup:new{ align = "left", header, scroll },
     }
 end
 
 function ChapterListView:onShow()
     UIManager:setDirty(self, function() return "ui", self.dimen end)
+    if self.current_index then
+        self._position_current = function()
+            FocusNav.scrollFocusedToTop(self)
+        end
+        UIManager:scheduleIn(0.1, self._position_current)
+    end
     return true
 end
 
 function ChapterListView:onCloseWidget()
+    if self._position_current then
+        UIManager:unschedule(self._position_current)
+    end
     UIManager:setDirty(nil, function() return "ui", self.dimen end)
 end
 
@@ -220,8 +263,12 @@ function M.show(data, callbacks)
     local view = ChapterListView:new{
         title = data.title,
         chapters = data.chapters,
+        current_index = data.current_index,
         on_refresh = callbacks.on_refresh,
         on_select_download = callbacks.on_select_download,
+        on_cache_next = callbacks.on_cache_next,
+        cache_next_label = data.cache_next_label,
+        offline_summary = data.offline_summary,
         on_select = callbacks.on_select,
         on_close = callbacks.on_close,
     }

@@ -152,13 +152,24 @@ function M:onReaderReady()
     local prepared = perf("reader_setup", opened, "book_id=", weread_book_id or "local")
     self:_setupXPointerOverlayPrototype()
     perf("overlay_setup", prepared)
-    if self.onUnifiedAnnotationsReady then self:onUnifiedAnnotationsReady() end
+    local session = self._reader_session_gen
+    self._unified_annotations_active = nil
+    if self.onUnifiedAnnotationsReady then
+        if weread_book_id then
+            -- Let the reader paint before looking up and placing saved annotations.
+            UIManager:scheduleIn(0.4, function()
+                if session ~= self._reader_session_gen then return end
+                self:onUnifiedAnnotationsReady()
+            end)
+        else
+            self:onUnifiedAnnotationsReady()
+        end
+    end
 
-    local annotations_ready = perf("annotations_ready", opened)
+    local services_started = perf("reader_services_begin", opened)
     self.progress_sync:on_reader_ready()
-    local prefetch_session_gen = self._reader_session_gen
     UIManager:scheduleIn(0.2, function()
-        if prefetch_session_gen ~= self._reader_session_gen then return end
+        if session ~= self._reader_session_gen then return end
         self:maybePrefetchNextChapter(weread_book_id)
     end)
     local _started, _title, reason = self.read_report:on_reader_ready()
@@ -166,7 +177,7 @@ function M:onReaderReady()
     if rr.enabled and rr.mode == "auto" and reason == "document_not_weread" then
         self:showTransientInfo(_("Current book is not from WeRead, reading time not reported"), 1)
     end
-    perf("reader_services", annotations_ready)
+    perf("reader_services", services_started)
     perf("reader_ready_total", opened)
 end
 
@@ -183,13 +194,13 @@ function M:onCloseDocument()
     -- Capture the immutable local position while the document is still alive.
     -- The network upload is scheduled; stopping ReadReport below also frees any
     -- in-flight report slot before that scheduled upload begins.
-    self.progress_sync:on_close_document()
     self._reader_session_gen = (self._reader_session_gen or 0) + 1
+    self._current_weread_book_id = nil
     self.downloader:cancelPrefetch("document_closed")
+    self.progress_sync:on_close_document()
     if self._cancelUnifiedAnnotationSync then self:_cancelUnifiedAnnotationSync() end
     self._annotation_pending_prefetch = nil
     self._annotation_context = nil
-    self._current_weread_book_id = nil
     self:_teardownThoughtInterception()
     self:_teardownXPointerOverlayPrototype()
     self:_removeReaderHighlightTapGuard()
@@ -232,7 +243,8 @@ function M:maybePrefetchNextChapter(book_id)
     end
 
     local next_chapter, next_uid
-    for index = current_index + 1, math.min(current_index + 2, #chapters) do
+    local count = cache.prefetch_chapter_count or 2
+    for index = current_index + 1, math.min(current_index + count, #chapters) do
         local chapter = chapters[index]
         local uid = tostring(chapter.chapterUid or chapter.chapterId or "")
         local cached = book.cached_chapters and book.cached_chapters[uid]
@@ -253,7 +265,7 @@ function M:maybePrefetchNextChapter(book_id)
         single_chapter = true,
         include_annotations = false,
         prefetch = true,
-        start_delay = cache.show_prefetch_notifications == false and 0.1 or 0.7,
+        start_delay = 0.1,
         silent_completion = true,
         offer_read = false,
         on_start = function()
@@ -283,13 +295,13 @@ function M:maybePrefetchNextChapter(book_id)
                 end
                 return
             end
-            local retry_requested = self.downloader:isPromotedPrefetch(
+            local retry_requested, resume_fraction = self.downloader:isPromotedPrefetch(
                 book, next_chapter)
             if value == "cancelled" or value == "document_closed"
                 or value == "replaced" or value == "manual_download"
                 or value == "setting_disabled" or value == "prefetch_not_applicable"
                 or value == "prefetch_context_missing" or value == "no_next_chapter"
-                or value == "next_chapter_cached" then
+                or value == "next_chapter_cached" or value == "prefetch_count_changed" then
                 logger.info("ended without completion:",
                     "book_id=", tostring(book_id),
                     "chapter_uid=", next_uid,
@@ -314,8 +326,9 @@ function M:maybePrefetchNextChapter(book_id)
                 local retry_delay = retry_cache.show_prefetch_notifications == false
                     and 0.1 or 1.1
                 UIManager:scheduleIn(retry_delay, function()
-                    if self.ui.document and self.ui.document.file == source_file then
-                        self:downloadChapterAndRead(book, next_chapter)
+                    if self._reader_session_gen == session
+                        and self.ui.document and self.ui.document.file == source_file then
+                        self:downloadChapterAndRead(book, next_chapter, resume_fraction)
                     end
                 end)
             end

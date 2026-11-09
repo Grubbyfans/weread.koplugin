@@ -44,6 +44,7 @@ package.preload["weread.ui.download_dialog"] = function()
         new = function(_self, options)
             options.show = function() end
             options.reportProgress = function() end
+            options.setTitle = function(self, title) self.title = title end
             options.close = function() end
             return options
         end,
@@ -139,6 +140,15 @@ expect(downloader._active_job.open_on_complete == true,
     "promotion requests automatic open")
 expect(downloader._active_job.progress_dialog ~= nil,
     "promotion exposes the background task progress")
+local dialog = downloader._active_job.progress_dialog
+expect(dialog.title == "Preparing chapter download...",
+    "promotion shows the worker's current stage")
+worker.starts[1].options.on_progress { stage = "source", attempt = 1 }
+expect(dialog.title:find("Downloading chapter", 1, true) == 1,
+    "promoted prefetch reports chapter download")
+worker.starts[1].options.on_progress { stage = "epub" }
+expect(dialog.title == "Building EPUB..." and dialog.progress_max == 0,
+    "promoted prefetch reports packaging without an estimated percentage")
 expect(downloader:isPromotedPrefetch(book_a, chapter_2),
     "promoted target can be detected by navigation")
 expect(not downloader:promotePrefetch(book_a, chapter_3),

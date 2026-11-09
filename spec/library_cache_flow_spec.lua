@@ -102,6 +102,7 @@ local host = {
     },
     ensureChaptersLoaded = function(_self, book) return book.chapters end,
     isNetworkOnline = function() return online end,
+    isNetworkConnected = function() return online end,
     showInfo = function() end,
     requireLogin = function() return true end,
     runOnlineTask = function(_self, _label, callback) callback() return true end,
@@ -193,9 +194,12 @@ expect(download_target == db_chapters[1],
 api_configured = true
 host.client.get_progress = function(_self, book_id)
     expect(book_id == "42", "reading progress requested for the wrong book")
-    return { book = { chapterUid = "5", progress = 2 } }
+    return { book = { chapterUid = "5", chapterOffset = 40, progress = 2 } }
 end
+partial.chapters[5].wordCount = 100
 host:openBookForReading({ book_id = "42", chapters = partial.chapters })
+expect(single_download_options.resume_fraction == 0.4,
+    "chapter download carries the mapped cloud position into the reader")
 expect(download_target == partial.chapters[5],
     "reading from cached details fetches cloud progress and downloads its exact chapter")
 
@@ -208,5 +212,14 @@ host.client.get_progress = function() error("gateway unavailable") end
 host:openBookForReading({ book_id = "42", chapters = partial.chapters, chapter_uid = 3 })
 expect(download_target == partial.chapters[3],
     "reading uses stored progress if the cloud request fails")
+
+online = false
+local offline_message
+host.showInfo = function(_self, message) offline_message = message end
+download_target = nil
+host:openChapter(partial, partial.chapters[5])
+expect(offline_message and offline_message:find("not cached", 1, true)
+    and download_target == nil,
+    "opening an uncached chapter offline explains why it cannot open")
 
 print(("library_cache_flow_spec: %d checks"):format(checks))

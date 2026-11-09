@@ -369,17 +369,26 @@ expect(prefetch ~= nil, "download settings contain a prefetch submenu")
 expect(footnote_popup == nil, "footnote display is controlled by the reader")
 
 local prefetch_items = prefetch and prefetch.sub_item_table_func() or {}
-expect(#prefetch_items == 3, "chapter prefetch contains its two related preferences")
+expect(#prefetch_items == 4, "chapter prefetch contains a chapter count and related preferences")
 expect(prefetch_items[1] and prefetch_items[1].text
-        == "Automatically prefetch next two chapters",
+        == "Automatically prefetch upcoming chapters",
     "automatic prefetch is the parent switch")
 expect(prefetch_items[2] and not prefetch_items[2].enabled_func(),
     "annotation prefetch is disabled while automatic prefetch is off")
 expect(prefetch_items[2] and prefetch_items[2].text
         == "Prefetch underlines and thoughts",
     "annotation prefetch uses the short label")
-expect(prefetch_items[3] and not prefetch_items[3].enabled_func(),
+expect(prefetch_items[4] and not prefetch_items[4].enabled_func(),
     "notification setting is disabled while automatic prefetch is off")
+
+package.preload["ui/widget/spinwidget"] = function()
+    return { new = function(_self, widget) return widget end }
+end
+prefetch_items[3].callback()
+expect(shown_widget.value == 2 and shown_widget.value_min == 1 and shown_widget.value_max == 20,
+    "chapter count can be set even when prefetch is off")
+shown_widget.callback({ value = 5 })
+expect(cache.prefetch_chapter_count == 5, "chapter count is persisted")
 
 local menu_updates = 0
 prefetch_items[1].callback({
@@ -403,7 +412,7 @@ expect(shown_widget.text:find("adds extra requests", 1, true),
 shown_widget.ok_callback()
 expect(cache.prefetch_annotations == true and menu_updates == 2,
     "annotation prefetch is enabled and refreshes the menu")
-expect(prefetch_items[3].enabled_func(),
+expect(prefetch_items[4].enabled_func(),
     "notification setting is enabled while automatic prefetch is on")
 
 prefetch_items[1].callback({ updateItems = function() end })

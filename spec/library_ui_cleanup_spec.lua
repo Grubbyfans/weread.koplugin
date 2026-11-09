@@ -50,9 +50,10 @@ package.preload["weread.lib.plugin_util"] = function()
 end
 
 local detail_view = { id = "detail" }
+local detail_data
 local chapter_view = { id = "chapters" }
 package.preload["weread.ui.book_detail_view"] = function()
-    return { show = function() return detail_view end }
+    return { show = function(data) detail_data = data return detail_view end }
 end
 package.preload["weread.ui.chapter_list_view"] = function()
     return { show = function() return chapter_view end }
@@ -83,10 +84,15 @@ for key, value in pairs(Library) do
     if host[key] == nil then host[key] = value end
 end
 
-local book = { book_id = "book", title = "Book", chapters = {} }
+local book = {
+    book_id = "book", title = "Book", chapter_uid = 2,
+    chapters = { { chapterUid = 1 }, { chapterUid = 2 } },
+}
 host:showBookMenu(book)
 expect(host._book_detail_view == detail_view,
     "book detail view was not tracked")
+expect(detail_data.bottom_actions[3].subtitle == "Chapter %1 · Download",
+    "the read button shows the uncached resume target")
 
 host:showChapterList(book)
 expect(host._chapter_list_view == chapter_view,
