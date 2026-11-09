@@ -64,8 +64,10 @@ local opened_path
 local single_download_options
 local download_target
 local online = false
+local api_configured = false
 local host = {
     settings = {
+        is_api_configured = function() return api_configured end,
         get = function(_self, key, default)
             if key == "books" then return books end
             return default
@@ -187,5 +189,24 @@ expect(download_target == partial.chapters[1],
 host:openBookForReading({ book_id = "new" })
 expect(download_target == db_chapters[1],
     "reading also loads the catalog when the book has no chapters in memory")
+
+api_configured = true
+host.client.get_progress = function(_self, book_id)
+    expect(book_id == "42", "reading progress requested for the wrong book")
+    return { book = { chapterUid = "5", progress = 2 } }
+end
+host:openBookForReading({ book_id = "42", chapters = partial.chapters })
+expect(download_target == partial.chapters[5],
+    "reading from cached details fetches cloud progress and downloads its exact chapter")
+
+db_chapters = partial.chapters
+host:openBookForReading({ book_id = "42", chapter_uid = 1 })
+expect(download_target == partial.chapters[5],
+    "fresh cloud progress overrides stale detail progress when loading the catalog")
+
+host.client.get_progress = function() error("gateway unavailable") end
+host:openBookForReading({ book_id = "42", chapters = partial.chapters, chapter_uid = 3 })
+expect(download_target == partial.chapters[3],
+    "reading uses stored progress if the cloud request fails")
 
 print(("library_cache_flow_spec: %d checks"):format(checks))

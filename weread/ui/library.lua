@@ -693,6 +693,19 @@ function M:showBookRecord(book)
     end
 end
 
+local function read_book_progress(client, book_id)
+    local result = client:get_progress(book_id)
+    local remote = result and result.book
+    if type(remote) == "table" then
+        return {
+            progress = tonumber(remote.progress),
+            chapter_uid = remote.chapterUid or remote.chapterId or remote.chapter_uid,
+            chapter_idx = tonumber(remote.chapterIdx or remote.chapterIndex or remote.chapter_idx),
+            chapter_offset = tonumber(remote.chapterOffset or remote.chapterPos or remote.offset),
+        }
+    end
+end
+
 function M:refreshBookRecord(book, old_view, options)
     options = options or {}
     if not self:requireLogin(false, true) then
@@ -715,16 +728,9 @@ function M:refreshBookRecord(book, old_view, options)
                 end
                 book.categoryName = info.categoryName or info.category or book.categoryName
             end
-            local progress_result = self.client:get_progress(book_id)
-            if progress_result and progress_result.book then
-                local remote = progress_result.book
-                book.progress = remote.progress or book.progress or 0
-                book.chapter_uid = remote.chapterUid or remote.chapterId
-                    or remote.chapter_uid or book.chapter_uid
-                book.chapter_idx = tonumber(remote.chapterIdx or remote.chapterIndex
-                    or remote.chapter_idx) or tonumber(book.chapter_idx)
-                book.chapter_offset = tonumber(remote.chapterOffset or remote.chapterPos
-                    or remote.offset) or tonumber(book.chapter_offset) or 0
+            local progress = read_book_progress(self.client, book_id)
+            for key, value in pairs(progress or {}) do
+                book[key] = value
             end
             book.book_id = book_id
             book._library_account_key = self.library_db
@@ -1452,7 +1458,8 @@ function M:openCachedBook(book)
     self:openFile(self:getFullBookCachePath(book))
 end
 
-local function reading_chapter_index(book, chapters)
+local function reading_chapter_index(book, chapters, progress)
+    progress = progress or book
     local local_position = book.last_local_position
     local local_uid = type(local_position) == "table"
         and (local_position.current_chapter_uid or local_position.chapter_uid)
@@ -1460,13 +1467,13 @@ local function reading_chapter_index(book, chapters)
     for index, chapter in ipairs(chapters) do
         local uid = tostring(chapter.chapterUid or chapter.chapterId or index)
         if local_uid and uid == tostring(local_uid) then return index end
-        if book.chapter_uid and uid == tostring(book.chapter_uid) then
+        if progress.chapter_uid and uid == tostring(progress.chapter_uid) then
             remote_index = index
         end
     end
     if remote_index then return remote_index end
 
-    local chapter_idx = tonumber(book.chapter_idx)
+    local chapter_idx = tonumber(progress.chapter_idx)
     if chapter_idx then
         for index, chapter in ipairs(chapters) do
             if tonumber(chapter.chapterIdx or chapter.chapterIndex) == chapter_idx then
@@ -1475,8 +1482,8 @@ local function reading_chapter_index(book, chapters)
         end
     end
 
-    local progress = math.max(0, math.min(100, tonumber(book.progress) or 0))
-    return math.floor(progress / 100 * math.max(0, #chapters - 1)) + 1
+    local percent = math.max(0, math.min(100, tonumber(progress.progress) or 0))
+    return math.floor(percent / 100 * math.max(0, #chapters - 1)) + 1
 end
 
 local function nearest_cached_chapter(book, chapters, target_index)
@@ -1516,34 +1523,47 @@ function M:openBookForReading(book)
         end
     end
 
-    local chapters = self:ensureChaptersLoaded(book)
-    if not chapters then
-        if self:isNetworkOnline() then
-            self:loadChapters(book, function(loaded)
-                local target = loaded[reading_chapter_index(book, loaded)]
-                if target then
-                    self:openChapter(book, target)
-                else
-                    self:showInfo(_("No readable chapter found"))
-                end
-            end)
+    local function open_target(chapters, progress)
+        local target_index = reading_chapter_index(book, chapters, progress)
+        local target = chapters[target_index]
+        local uid = target and (target.chapterUid or target.chapterId)
+        local cached = uid and book.cached_chapters and book.cached_chapters[tostring(uid)]
+        if file_exists(cached) then
+            self:openFile(cached)
+        elseif target and self:isNetworkOnline() then
+            self:openChapter(book, target)
+        elseif #chapters == 0 and self:isNetworkOnline() then
+            self:showInfo(_("No readable chapter found"))
         else
-            read_offline({}, 1)
+            read_offline(chapters, target_index)
         end
-        return
     end
 
-    local target_index = reading_chapter_index(book, chapters)
-    local target = chapters[target_index]
-    local uid = target and (target.chapterUid or target.chapterId)
-    local cached = uid and book.cached_chapters and book.cached_chapters[tostring(uid)]
-    if file_exists(cached) then
-        self:openFile(cached)
-    elseif target and self:isNetworkOnline() then
-        self:openChapter(book, target)
-    else
-        read_offline(chapters, target_index)
+    local chapters = self:ensureChaptersLoaded(book)
+    local function read_online()
+        local progress
+        if self.settings:is_api_configured() then
+            local ok, result = pcall(read_book_progress, self.client, book.book_id or book.bookId)
+            if ok then
+                progress = result
+            else
+                logger.warn("load reading progress failed:", log_error(result))
+            end
+        end
+        if chapters then
+            open_target(chapters, progress)
+        else
+            self:loadChapters(book, function(loaded)
+                open_target(loaded, progress)
+            end)
+        end
     end
+
+    if self:isNetworkOnline()
+        and self:runOnlineTask(_("Read"), read_online, nil, { silent_offline = true }) ~= false then
+        return
+    end
+    open_target(chapters or {})
 end
 
 -- Open a chapter, preferring its cached file and falling back to a download.
