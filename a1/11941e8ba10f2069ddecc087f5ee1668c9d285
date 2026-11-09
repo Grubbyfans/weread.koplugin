@@ -1,0 +1,62 @@
+spec/updater_ui_spec.lua
+  s_5c13a3549f430d::t_b103b00e75f29d 97-98,103,108,111-113,115,117,119,122,124-126,128,130,137
+docs/macos-release-testing.md
+  s_5c13a3549f430d::t_1c3f9c486c56f3 137-138,179
+spec/prefetch_lifecycle_spec.lua
+  s_5c13a3549f430d::t_cbb1c9b1287512 1,7,28,60,127-136,138-139
+  s_5c13a3549f430d::t_12a18b9bf92f82 158-176
+spec/library_cache_flow_spec.lua
+  s_5c13a3549f430d::t_cbb1c9b1287512 65-66,94-102,172-185
+  s_5c13a3549f430d::t_12a18b9bf92f82 187-189
+  s_5c13a3549f430d::t_7912917b35725c 186
+spec/settings_spec.lua
+  s_5c13a3549f430d::t_cbb1c9b1287512 124
+docs/testing.md
+  s_5c13a3549f430d::t_b103b00e75f29d 102
+spec/koreader/weread_updater_smoke.lua
+  s_5c13a3549f430d::t_b103b00e75f29d 77-78,91,100,104,106,119-123,132,137,161
+weread/ui/menu.lua
+  s_5c13a3549f430d::t_b103b00e75f29d 914
+  s_5c13a3549f430d::t_cbb1c9b1287512 419,427
+spec/updater_spec.lua
+  s_5c13a3549f430d::t_b103b00e75f29d 174-175
+main.lua
+  s_5c13a3549f430d::t_b103b00e75f29d 29
+spec/menu_prefetch_spec.lua
+  s_5c13a3549f430d::t_cbb1c9b1287512 374
+  s_5c13a3549f430d::t_b103b00e75f29d 256-257,269,273
+weread/ui/updater.lua
+  s_5c13a3549f430d::t_b103b00e75f29d 136,151,166-167,169,177-178,193,195,202,209,219,226
+_meta.lua
+  s_5c13a3549f430d::t_b103b00e75f29d 10
+weread/lib/i18n.lua
+  s_5c13a3549f430d::t_cbb1c9b1287512 232,332-334
+weread/ui/library.lua
+  s_5c13a3549f430d::t_ed0e4a23152e6a 1342,1455-1465,1467,1469-1470,1472-1473,1478-1490,1492,1494,1496-1498,1500-1507,1511-1514,1519,1544,1550,1560,1613-1614,1616
+  s_5c13a3549f430d::t_12a18b9bf92f82 1508,1510,1515-1517,1520-1543,1545
+  s_5c13a3549f430d::t_da16fabc4966b5 1509,1518
+weread/lib/reader_lifecycle.lua
+  s_5c13a3549f430d::t_ed0e4a23152e6a 86-88,229,234-244,247-248,250,265,273-283,310,470
+spec/chapter_list_ui_spec.lua
+  s_5c13a3549f430d::t_cbb1c9b1287512 101,127
+CHANGELOG.md
+  s_5c13a3549f430d::t_b103b00e75f29d 5-10
+weread/lib/settings.lua
+  s_5c13a3549f430d::t_cbb1c9b1287512 37,181
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.5",
+  "base_commit_sha": "a111941e8ba10f2069ddecc087f5ee1668c9d285",
+  "prompts": {},
+  "sessions": {
+    "s_5c13a3549f430d": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "01a1bfdf-e394-7f41-a668-6ea43eeaa65f",
+        "model": "gpt-6.1-sol"
+      },
+      "human_author": "周康 <1412873631@qq.com>"
+    }
+  }
+}
